@@ -2,10 +2,8 @@ import os
 from datetime import datetime
 from tkinter import filedialog
 from tkinter import Tk
-from PIL import Image
-from PIL import ExifTags
-from PIL.ExifTags import TAGS
 import subprocess
+from dateutil import parser
 
 def choose_directory():
     root = Tk()
@@ -15,32 +13,7 @@ def choose_directory():
     directory = filedialog.askdirectory(title="Select Photos Directory")
     return directory
 
-# def get_date_taken_from_exif(file_path):
-#     try:
-#         with Image.open(file_path) as img:
-#             exif_data = img._getexif()
-#             if exif_data is not None:
-#                 for tag, value in exif_data.items():
-#                     tag_name = TAGS.get(tag, tag)
-#                     if tag_name == 'DateTimeOriginal':
-#                         return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
-#     except Exception as e:
-#         print(f"Error extracting Date Taken from {file_path}: {e}")
-#     return None
-#
-# def get_media_created_from_video(file_path):
-#     try:
-#         print(f"Getting media created from {file_path}")
-#         properties = propsys.SHGetPropertyStoreFromParsingName(file_path)
-#         print('properties: ', properties)
-#         dt = properties.GetValue(pscon.PKEY_Media_DateEncoded).GetValue()
-#         media_created = datetime.fromtimestamp(dt)
-#         return media_created
-#     except Exception as e:
-#         print(f"Error extracting Media Created from {file_path}: {e}")
-#     return None
-
-def rename_photos(directory, date_option):
+def rename_photos(directory, date_option, date_option_dict, exe, custom_filename):
     if not directory:
         print("No directory selected. Exiting.")
         return
@@ -53,50 +26,49 @@ def rename_photos(directory, date_option):
 
     for file in files:
 
+        process = subprocess.Popen([exe, file], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   universal_newlines=True)
+        file_metadata = {}
+        for output in process.stdout:
+            print(output)
+            info = {}
+            line = (output.strip().split(":", 1))
+            info[line[0].strip()] = line[1].strip()
+            file_metadata.update(info)
 
-        exe = ""
-        process = subprocess.Popen([exe, file], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        for output in process.STDOUT:
-            print(output.strip())
+        if (date_option == 'dt' and file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')))\
+                or (date_option == 'mc' and file.lower().endswith(('.mp4', '.avi', '.mov')))\
+                or date_option == 'dm':  # If reading file metadata
 
+            date_time_string : str = file_metadata[date_option_dict[date_option]]
+            date_time_string = date_time_string.strip().split("+")[0]
+            date_time = datetime.strptime(date_time_string, '%Y:%m:%d %H:%M:%S')
 
-
-
-        print('file:', file)
-        print('dateoption:', date_option)
-        if date_option == 'dt' and file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):  # Date Taken for photo files
-            #date_time = get_date_taken_from_exif(os.path.join(directory, file))
             if date_time is None:
-                print(f"Unable to extract Date Taken from {file}. Skipping.")
+                print(f"Unable to extract {date_option} from {file}. Skipping.")
                 continue
-        elif date_option == 'dm':  # Date Modified for all files
-            date_time = datetime.fromtimestamp(os.path.getmtime(os.path.join(directory, file)))
-            print('Date Modified:', date_time)
-        elif date_option == 'mc' and file.lower().endswith(('.mp4', '.avi', '.mov')):  # Media Created for video files
-            #media_created = get_media_created_from_video(os.path.join(directory, file))
-            if media_created is None:
-                print(f"Unable to extract Media Created from {file}. Skipping.")
-                continue
-            date_time = media_created
-            print('Media Created:', date_time)
+
         elif date_option == 'ofp':  # Original Filename Parsing
-            # Placeholder for your custom parsing logic based on the variations in the filename format
-            # For now, it assumes that the datetime information is in the first 19 characters of the filename
-            datetime_str = file[:19]
+            date_time_string = file_metadata['File Name'].strip().rsplit('.')[0]
             try:
-                date_time = datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S")
+                date_time = parser.parse(date_time_string)
             except ValueError:
                 print(f"Error parsing datetime from filename: {file}. Skipping.")
                 continue
-        else:
+        elif date_option != 'cf':
             print("Invalid option or not applicable. Skipping.")
             continue
 
         # Create a new filename with the desired format (without seconds)
-        new_file_name_base = date_time.strftime('%Y-%m-%d %H.%M')
 
+        if date_option == 'cf':
+            new_file_name_base = custom_filename
+        else:
+            new_file_name_base = date_time.strftime('%Y-%m-%d %H.%M')
+
+        
         # Append the count and file extension to the new filename
-        new_file_name = f"{new_file_name_base}_{files_renamed_count + 1}{os.path.splitext(file)[1]}"
+        new_file_name = f"{new_file_name_base}_{files_renamed_count + 1}.{file_metadata['File Extension']}"
 
         # Create the full path for the new file
         new_path = os.path.join(directory, new_file_name)
@@ -111,8 +83,39 @@ def rename_photos(directory, date_option):
 
 if __name__ == "__main__":
     directory = choose_directory()
-
+    exe = "exiftool.exe"
+    custom_filename = ''
+    date_option_dict = {
+        "dt": "Date/Time Original",
+        "dm": "File Modification Date/Time",
+        "mc": "Media Create Date",
+        "ofn": "Original Filename"
+    }
     date_option = input("Choose a date option for renaming "
-                        "(dt: Date Taken / dm: Date Modified / mc: Media Created / ofp: Original Filename Parsing / of: Original Filename): ").lower()
+                        "(dt: Date Taken / dm: Date Modified / mc: Media Created / ofn: Parsed from Original Filename / cf: New Custom Filename (all files named 'custom filename - 1, -2' etc.) : ").lower()
 
-    rename_photos(directory, date_option)
+
+    if date_option == "cf":
+        custom_filename = input("Choose a custom filename for renaming: ")
+    # file = "C:/Users/hunua/Downloads/gpt trial/by media created tag/2024-01-26 00.07_4.MOV"
+    #file = "C:/Users/hunua/Downloads/gpt trial/2000 - 2010 - 1.jpg"
+    # file = "C:/Users/hunua/Downloads/gpt trial/date taken/IMG_1593 (3).JPG"
+    # process = subprocess.Popen([exe, file], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    #                            universal_newlines=True)
+    # file_metadata = {}
+    # for output in process.stdout:
+    #     print(output)
+    #     info = {}
+    #     line = (output.strip().split(":", 1))
+    #     info[line[0].strip()] = line[1].strip()
+    #     file_metadata.update(info)
+    #
+    # for each in file_metadata:
+    #     print(each)
+    #
+    # print("end")
+    #
+    # print(info)
+    # print(file_metadata['Media Create Date'])
+
+    rename_photos(directory, date_option, date_option_dict, exe, custom_filename)

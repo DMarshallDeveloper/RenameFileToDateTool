@@ -47,6 +47,7 @@ def rename_photos(directory, date_option, date_option_dict, exe, custom_filename
 
             date_time_string : str = file_metadata[date_option_dict[date_option]]
             date_time_string = date_time_string.strip().split("+")[0]
+            date_time_string = date_time_string.strip().split(".")[0]
             date_time = datetime.strptime(date_time_string, '%Y:%m:%d %H:%M:%S')
 
             if date_time is None:

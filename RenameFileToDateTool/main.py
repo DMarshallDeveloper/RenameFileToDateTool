@@ -128,9 +128,9 @@ def rename_photos(directory, date_option, date_option_dict, exe, custom_date, cu
         # Create a new filename with the desired format (without seconds)
 
         if date_option == 'cd':
-            new_file_name_base = datetime(int(custom_date), 1, 1).strftime('%Y-%m-%d %H.%M')
+            new_file_name_base = datetime(int(custom_date), 1, 1).strftime('%Y-%m-%d %H.%M.%S')
         elif date_time is not None:
-            new_file_name_base = date_time.strftime('%Y-%m-%d %H.%M')
+            new_file_name_base = date_time.strftime('%Y-%m-%d %H.%M.%S')
         else:
             print(f"Error finding datetime in file: {file}. Skipping.")
             continue
@@ -238,7 +238,8 @@ def change_exif_date(directory: str):
         #     print(f"Invalid file type: {file}. Skipping.")
         #     continue
 
-        exif_tool_arguments = 'exiftool.exe -time:all="' + date_time.strftime("%Y:%m:%d %H:%M:%S") + '" -wm w -overwrite_original "' + file_path + '"'
+        exif_tool_arguments = 'exiftool.exe  -DateTimeOriginal="' + date_time.strftime("%Y:%m:%d %H:%M:%S") + ' -overwrite_original "' + file_path + '"'
+        print(exif_tool_arguments)
         change_process = subprocess.Popen(exif_tool_arguments,
                                           stdout=subprocess.PIPE,
                                           stderr=subprocess.STDOUT,

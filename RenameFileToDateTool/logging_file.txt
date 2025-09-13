@@ -1,0 +1,3 @@
+Successfully processed: 2025-05-11 16.06.51_1.heic.
+Error parsing datetime from filename: exiftool.exe. Skipping.
+1 files have been updated.

@@ -94,6 +94,8 @@ def change_exif_date(directory: str):
                     continue
 
                 files_updated += 1
+                logging_file.write(f"Successfully processed: {file}.\n")
+                print(f"Successfully processed: {file}.\n")
                 if files_updated % 50 == 0:
                     logging_file.write(f"Files updated: {files_updated}\n")
                     print(f"Files updated: {files_updated}")

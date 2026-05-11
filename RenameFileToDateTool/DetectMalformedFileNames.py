@@ -1,10 +1,6 @@
 import os
-from datetime import datetime
-from tkinter import filedialog, Tk
-import subprocess
-from dateutil import parser
-import os
 import re
+from tkinter import filedialog, Tk
 
 
 def choose_directory():

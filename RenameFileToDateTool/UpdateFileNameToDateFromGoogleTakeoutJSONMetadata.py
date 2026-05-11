@@ -1,13 +1,21 @@
+import bisect
 import json
 import os
-import shutil
 import re
+import shutil
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from tkinter import Tk, filedialog
 from zoneinfo import ZoneInfo
 
-# Use a descriptive timezone name for clarity
 NEW_ZEALAND_TIMEZONE = ZoneInfo("Pacific/Auckland")
+
+MEDIA_EXTENSIONS = (
+    "jpg|jpeg|png|gif|heic|heif|mov|mp4|m4v|avi|mpg|mpeg"
+)
+
+DUPLICATE_SUFFIX_RE = re.compile(r"(?:\((\d+)\)|_(\d+))$", re.IGNORECASE)
+REAL_EXTENSION_RE = re.compile(rf"^(.*?\.({MEDIA_EXTENSIONS}))", re.IGNORECASE)
 
 
 def select_folder_dialog(title: str) -> str | None:
@@ -23,10 +31,7 @@ def select_folder_dialog(title: str) -> str | None:
 
 
 def generate_unique_filename(output_folder: str, base_name: str, extension: str) -> str:
-    """Return a filename (base_name + extension) that doesn't already exist in output_folder.
-
-    If a file already exists, append _1, _2, ... until an unused name is found.
-    """
+    """Return a filename that doesn't already exist in output_folder."""
     candidate_name = f"{base_name}{extension}"
     counter = 1
     while os.path.exists(os.path.join(output_folder, candidate_name)):
@@ -35,41 +40,23 @@ def generate_unique_filename(output_folder: str, base_name: str, extension: str)
     return candidate_name
 
 
-# Recognised media file extensions (add more if you need them)
-MEDIA_EXTENSIONS = (
-    "jpg|jpeg|png|gif|heic|heif|mov|mp4|m4v|avi|mpg|mpeg"
-)
-
-# Pattern matching for Google duplicate tokens such as _(1) or (1)
-DUPLICATE_SUFFIX_RE = re.compile(r"(?:\((\d+)\)|_(\d+))$", re.IGNORECASE)
-
-# Capture everything up to and including a recognised real extension
-REAL_EXTENSION_RE = re.compile(rf"^(.*?\.({MEDIA_EXTENSIONS}))", re.IGNORECASE)
-
-
 def infer_media_filename_from_json(json_filename: str) -> str | None:
-    """Given a Google-Takeout supplemental JSON filename, return the media filename it most likely belongs to.
-
-    Returns a string like "IMG_2770(1).heic" or None if no clear match can be inferred.
-    """
+    """Given a Google-Takeout JSON filename, return the media filename it most likely belongs to."""
     if not json_filename.lower().endswith(".json"):
         return None
-    stem = json_filename[:-5]  # remove the trailing ".json"
+    stem = json_filename[:-5]
 
-    # Remove trailing duplicate marker (if present)
     duplicate_match = DUPLICATE_SUFFIX_RE.search(stem)
     duplicate_token = duplicate_match.group(0) if duplicate_match else ""
     if duplicate_match:
         stem = stem[:duplicate_match.start()]
 
-    # Try to find a real media extension inside the stem
     base_match = REAL_EXTENSION_RE.match(stem)
     if not base_match:
         return None
 
-    media_part = base_match.group(1)  # e.g. "IMG_2770.heic"
+    media_part = base_match.group(1)
 
-    # If there was a duplicate token removed earlier, re-insert it before the extension
     if duplicate_token:
         root, ext = os.path.splitext(media_part)
         media_part = f"{root}{duplicate_token}{ext}"
@@ -78,38 +65,54 @@ def infer_media_filename_from_json(json_filename: str) -> str | None:
     return media_part
 
 
-def find_matching_media_for_json(json_filename: str, available_media_filenames: list[str]) -> tuple[str | None, str]:
+def common_prefix_length(a: str, b: str) -> int:
+    a_root = os.path.splitext(a)[0].lower()
+    b_root = os.path.splitext(b)[0].lower()
+    return len(os.path.commonprefix([a_root, b_root]))
+
+
+def find_prefix_match(prefix: str, sorted_lower: list[str], media_lower_map: dict[str, str]) -> str | None:
+    """Find the first media filename whose lowercased name starts with prefix. O(log n)."""
+    idx = bisect.bisect_left(sorted_lower, prefix)
+    if idx < len(sorted_lower) and sorted_lower[idx].startswith(prefix):
+        return media_lower_map[sorted_lower[idx]]
+    return None
+
+
+def find_matching_media_for_json(
+    json_filename: str,
+    media_lower_map: dict[str, str],
+    sorted_lower: list[str]
+) -> tuple[str | None, str]:
     """Attempt to find the correct media filename for a given JSON filename.
 
     Returns a tuple (matched_media_filename_or_None, method_string).
+    media_lower_map maps lowercased filename -> original filename.
+    sorted_lower is sorted(media_lower_map.keys()) for bisect lookups.
     """
     inferred_media_name = infer_media_filename_from_json(json_filename)
     if inferred_media_name:
-        for candidate in available_media_filenames:
-            if candidate.lower().startswith(inferred_media_name.lower()):
-                return candidate, "exact_inferred"
+        match = find_prefix_match(inferred_media_name.lower(), sorted_lower, media_lower_map)
+        if match:
+            return match, "exact_inferred"
 
-    stem = json_filename[:-5]  # remove ".json"
+    stem = json_filename[:-5]
     dup_match = DUPLICATE_SUFFIX_RE.search(stem)
     if dup_match:
         stem = stem[:dup_match.start()]
     if stem:
-        for candidate in available_media_filenames:
-            if candidate.lower().startswith(stem.lower()):
-                return candidate, "startswith_fallback"
+        match = find_prefix_match(stem.lower(), sorted_lower, media_lower_map)
+        if match:
+            return match, "startswith_fallback"
 
-    def common_prefix_length(a: str, b: str) -> int:
-        a_root = os.path.splitext(a)[0].lower()
-        b_root = os.path.splitext(b)[0].lower()
-        return len(os.path.commonprefix([a_root, b_root]))
-
+    # Fuzzy fallback: most characters in common (still O(n) but rarely reached)
     best_candidate = None
     best_len = 0
-    for candidate in available_media_filenames:
-        length = common_prefix_length(stem, candidate)
+    for original in media_lower_map.values():
+        length = common_prefix_length(stem, original)
         if length > best_len:
             best_len = length
-            best_candidate = candidate
+            best_candidate = original
 
     stem_length = len(stem)
     if best_candidate and stem_length > 0 and best_len >= stem_length:
@@ -119,8 +122,9 @@ def find_matching_media_for_json(json_filename: str, available_media_filenames: 
 
 
 def process_and_copy_media_files(source_folder: str, destination_folder: str, dry_run: bool = False) -> None:
-    """Copy media files from source_folder to destination_folder using timestamps from each JSON's metadata.
+    """Copy media files from source_folder to destination_folder using timestamps from JSON metadata.
 
+    Matching and planning is done sequentially, then all copies run in parallel.
     When dry_run is True, only prints what would be done.
     """
     if not source_folder or not destination_folder:
@@ -129,15 +133,19 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
 
     os.makedirs(destination_folder, exist_ok=True)
 
-    entries_in_source_folder = os.listdir(source_folder)
-    metadata_json_filenames = [f for f in entries_in_source_folder if f.lower().endswith(".json")]
-    media_filenames = [f for f in entries_in_source_folder if not f.lower().endswith(".json")]
+    entries = os.listdir(source_folder)
+    metadata_json_filenames = [f for f in entries if f.lower().endswith(".json")]
+    media_filenames = [f for f in entries if not f.lower().endswith(".json")]
+
+    # Pre-build lookup structures once
+    media_lower_map = {f.lower(): f for f in media_filenames}
+    sorted_lower = sorted(media_lower_map.keys())
 
     matched_media_files = set()
     unmatched_json_file_list = []
     unmatched_media_file_set = set(media_filenames)
-
     match_report = {}
+    copy_ops = []  # (source_path, destination_path) collected for parallel execution
 
     for metadata_filename in metadata_json_filenames:
         json_file_path = os.path.join(source_folder, metadata_filename)
@@ -148,12 +156,14 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
                 metadata = json.load(json_file)
 
             if "photoTakenTime" not in metadata:
-                print(f"⚠️ No 'photoTakenTime' found in {metadata_filename}")
+                print(f"No 'photoTakenTime' found in {metadata_filename}")
                 unmatched_json_file_list.append(metadata_filename)
                 match_report[metadata_filename] = (None, "no_timestamp")
                 continue
 
-            matched_media_filename, method_used = find_matching_media_for_json(metadata_filename, media_filenames)
+            matched_media_filename, method_used = find_matching_media_for_json(
+                metadata_filename, media_lower_map, sorted_lower
+            )
 
             if matched_media_filename:
                 timestamp_seconds = int(metadata["photoTakenTime"]["timestamp"])
@@ -162,56 +172,71 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
                 extension = os.path.splitext(matched_media_filename)[1].lower()
 
                 unique_new_filename = generate_unique_filename(destination_folder, timestamped_base_name, extension)
-
                 source_media_path = os.path.join(source_folder, matched_media_filename)
                 destination_media_path = os.path.join(destination_folder, unique_new_filename)
 
                 if dry_run:
                     print(f"[DRY RUN] Would copy: {matched_media_filename} -> {unique_new_filename} (method: {method_used})")
                 else:
-                    shutil.copy2(source_media_path, destination_media_path)
-                    print(f"✅ Copied and renamed: {matched_media_filename} → {unique_new_filename} (method: {method_used})")
+                    copy_ops.append((source_media_path, destination_media_path))
+                    print(f"Matched: {matched_media_filename} -> {unique_new_filename} (method: {method_used})")
 
                 matched_media_files.add(matched_media_filename)
                 unmatched_media_file_set.discard(matched_media_filename)
                 match_report[metadata_filename] = (matched_media_filename, method_used)
 
             else:
-                print(f"⚠️ No matching media file found for {metadata_filename}")
+                print(f"No matching media file found for {metadata_filename}")
                 unmatched_json_file_list.append(metadata_filename)
                 match_report[metadata_filename] = (None, "no_match")
 
         except Exception as error:
-            print(f"❌ Error processing {metadata_filename}: {error}")
+            print(f"Error processing {metadata_filename}: {error}")
             unmatched_json_file_list.append(metadata_filename)
             match_report[metadata_filename] = (None, f"error: {error}")
+
+    # Execute all copies in parallel
+    if copy_ops:
+        print(f"\nCopying {len(copy_ops)} files...")
+
+        def copy_file(op):
+            src, dst = op
+            try:
+                shutil.copy2(src, dst)
+            except Exception as e:
+                print(f"Error copying {os.path.basename(src)}: {e}")
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            executor.map(copy_file, copy_ops)
+
+        print("All copies complete.")
 
     report_path = os.path.join(destination_folder, "match_report.json")
     with open(report_path, "w") as report_file:
         json.dump(match_report, report_file, indent=2)
-    print(f"📝 Detailed match report written to: {report_path}")
+    print(f"Match report written to: {report_path}")
 
     if unmatched_json_file_list:
         log_path = os.path.join(destination_folder, "unmatched_json_files.txt")
         with open(log_path, "w") as log_file:
             for filename in unmatched_json_file_list:
                 log_file.write(filename + "\n")
-        print(f"📝 Logged {len(unmatched_json_file_list)} unmatched JSON files to: {log_path}")
+        print(f"Logged {len(unmatched_json_file_list)} unmatched JSON files to: {log_path}")
 
     if unmatched_media_file_set:
         log_path = os.path.join(destination_folder, "unmatched_media_files.txt")
         with open(log_path, "w") as log_file:
             for filename in unmatched_media_file_set:
                 log_file.write(filename + "\n")
-        print(f"📝 Logged {len(unmatched_media_file_set)} unmatched media files to: {log_path}")
+        print(f"Logged {len(unmatched_media_file_set)} unmatched media files to: {log_path}")
     else:
-        print("✅ All media files had matching metadata.")
+        print("All media files had matching metadata.")
 
     total_processed = len(metadata_json_filenames)
     total_matched = len(matched_media_files)
     print(f"Summary: processed {total_processed} JSON metadata files, matched {total_matched} media files.")
     if dry_run:
-        print("Note: dry-run mode — no files were actually copied.")
+        print("Note: dry-run mode - no files were actually copied.")
 
 
 if __name__ == "__main__":
@@ -225,6 +250,6 @@ if __name__ == "__main__":
         dry_run_mode = response == 'y'
 
         process_and_copy_media_files(source_folder_selected, destination_folder_selected, dry_run=dry_run_mode)
-        print("✅ File copying and renaming completed successfully!")
+        print("File copying and renaming completed successfully!")
     else:
-        print("❌ Operation canceled.")
+        print("Operation canceled.")

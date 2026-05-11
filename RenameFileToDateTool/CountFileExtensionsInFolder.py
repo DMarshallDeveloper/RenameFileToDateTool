@@ -10,9 +10,9 @@ def get_file_extensions(folder):
     # Walk through the directory and collect file extensions
     for root, _, files in os.walk(folder):
         for file in files:
-            if "." in file:
-                ext = file.split(".")[-1]  # Get extension while preserving case
-                extensions.append(ext)
+            _, ext = os.path.splitext(file)
+            if ext:
+                extensions.append(ext.lstrip('.'))
 
     return extensions
 

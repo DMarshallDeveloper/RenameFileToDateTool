@@ -1,17 +1,24 @@
 import os
+import re
 import shutil
-import mimetypes
 import logging
 import tkinter as tk
 from tkinter import filedialog
 
+SPLIT_FOLDER_RE = re.compile(r'_\d{2}$')
+
+MEDIA_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.heic', '.heif',
+    '.mp4', '.mov', '.m4v', '.avi', '.mpg', '.mpeg',
+    '.3gp', '.mkv', '.wmv'
+}
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Function to check if a file is an image or video
+
 def is_media_file(file_path):
-    mime_type, _ = mimetypes.guess_type(file_path)
-    return mime_type and (mime_type.startswith('image') or mime_type.startswith('video'))
+    return os.path.splitext(file_path)[1].lower() in MEDIA_EXTENSIONS
 
 # Function to move files to a target directory
 def move_file(file_path, target_dir):
@@ -51,7 +58,7 @@ def split_media_files(media_files, parent_folder):
 def process_folder_structure(root_folder):
     for root, dirs, files in os.walk(root_folder):
         # Filter out subfolders that match the split naming pattern
-        dirs[:] = [d for d in dirs if not d.endswith(tuple(f"_{i:02}" for i in range(1, 100)))]
+        dirs[:] = [d for d in dirs if not SPLIT_FOLDER_RE.search(d)]
 
         for dir_name in dirs:
             subfolder_path = os.path.join(root, dir_name)

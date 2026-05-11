@@ -2,35 +2,64 @@ import os
 import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox
+from concurrent.futures import ThreadPoolExecutor
 
-def move_files_to_top_level(root_dir):
-    for dirpath, dirnames, filenames in os.walk(root_dir, topdown=False):
+
+def compute_moves(root_dir):
+    """Pre-compute all (source, destination) pairs without moving anything.
+
+    Done sequentially so name collision resolution is deterministic.
+    """
+    planned_names = {
+        f for f in os.listdir(root_dir)
+        if os.path.isfile(os.path.join(root_dir, f))
+    }
+    moves = []
+
+    for dirpath, _, filenames in os.walk(root_dir, topdown=False):
+        if os.path.abspath(dirpath) == os.path.abspath(root_dir):
+            continue  # Already at top level
+
         for filename in filenames:
             source_path = os.path.join(dirpath, filename)
-            dest_path = os.path.join(root_dir, filename)
-
-            if os.path.abspath(source_path) == os.path.abspath(dest_path):
-                continue  # Skip if already in root
-
             base, ext = os.path.splitext(filename)
+            dest_name = filename
             counter = 1
-            while os.path.exists(dest_path):
-                dest_path = os.path.join(root_dir, f"{base}_{counter}{ext}")
+            while dest_name in planned_names:
+                dest_name = f"{base}_{counter}{ext}"
                 counter += 1
 
-            shutil.move(source_path, dest_path)
+            planned_names.add(dest_name)
+            moves.append((source_path, os.path.join(root_dir, dest_name)))
+
+    return moves
+
+
+def move_files_to_top_level(root_dir):
+    moves = compute_moves(root_dir)
+    if not moves:
+        messagebox.showinfo("Success", "All files are already in the top-level directory.")
+        return
+
+    def do_move(pair):
+        shutil.move(*pair)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        executor.map(do_move, moves)
 
     messagebox.showinfo("Success", "All files have been moved to the top-level directory.")
 
+
 def main():
     root = tk.Tk()
-    root.withdraw()  # Hide the main window
+    root.withdraw()
 
     folder_path = filedialog.askdirectory(title="Select Folder to Flatten")
     if folder_path:
         move_files_to_top_level(folder_path)
     else:
         messagebox.showwarning("Cancelled", "No folder was selected.")
+
 
 if __name__ == "__main__":
     main()

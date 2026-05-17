@@ -2,7 +2,6 @@ import os
 import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from concurrent.futures import ThreadPoolExecutor
 
 
 def compute_moves(root_dir):
@@ -41,13 +40,14 @@ def move_files_to_top_level(root_dir):
         messagebox.showinfo("Success", "All files are already in the top-level directory.")
         return
 
-    def do_move(pair):
-        shutil.move(*pair)
+    total = len(moves)
+    print(f"Moving {total} files...")
+    for i, (src, dst) in enumerate(moves, 1):
+        shutil.move(src, dst)
+        if i % 50 == 0 or i == total:
+            print(f"  Moved {i}/{total} files")
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        executor.map(do_move, moves)
-
-    messagebox.showinfo("Success", "All files have been moved to the top-level directory.")
+    messagebox.showinfo("Success", f"All {total} files have been moved to the top-level directory.")
 
 
 def main():

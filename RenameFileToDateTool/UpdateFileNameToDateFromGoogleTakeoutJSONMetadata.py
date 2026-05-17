@@ -30,14 +30,19 @@ def select_folder_dialog(title: str) -> str | None:
     return selected_folder
 
 
-def generate_unique_filename(output_folder: str, base_name: str, extension: str) -> str:
-    """Return a filename that doesn't already exist in output_folder."""
-    candidate_name = f"{base_name}{extension}"
+def generate_unique_filename(output_folder: str, base_name: str, extension: str, planned_names: set) -> str:
+    """Return a filename in the master library's format: '<base_name>_<N><extension>'.
+
+    Always includes an _N suffix starting at 1, matching main.py's convention, so every file
+    in the master library has the same shape regardless of whether the timestamp is unique.
+    """
     counter = 1
-    while os.path.exists(os.path.join(output_folder, candidate_name)):
+    while True:
         candidate_name = f"{base_name}_{counter}{extension}"
+        if not os.path.exists(os.path.join(output_folder, candidate_name)) and candidate_name not in planned_names:
+            planned_names.add(candidate_name)
+            return candidate_name
         counter += 1
-    return candidate_name
 
 
 def infer_media_filename_from_json(json_filename: str) -> str | None:
@@ -146,6 +151,8 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
     unmatched_media_file_set = set(media_filenames)
     match_report = {}
     copy_ops = []  # (source_path, destination_path) collected for parallel execution
+    base_name_to_datetime = {}  # lowercase stem -> datetime, for Live Photo pairing fallback
+    planned_destination_names = set()  # tracks names already allocated to prevent same-timestamp collisions
 
     for metadata_filename in metadata_json_filenames:
         json_file_path = os.path.join(source_folder, metadata_filename)
@@ -168,10 +175,10 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
             if matched_media_filename:
                 timestamp_seconds = int(metadata["photoTakenTime"]["timestamp"])
                 local_datetime = datetime.fromtimestamp(timestamp_seconds, tz=NEW_ZEALAND_TIMEZONE)
-                timestamped_base_name = local_datetime.strftime("%Y-%m-%d_%H-%M-%S")
+                timestamped_base_name = local_datetime.strftime("%Y-%m-%d %H.%M.%S")
                 extension = os.path.splitext(matched_media_filename)[1].lower()
 
-                unique_new_filename = generate_unique_filename(destination_folder, timestamped_base_name, extension)
+                unique_new_filename = generate_unique_filename(destination_folder, timestamped_base_name, extension, planned_destination_names)
                 source_media_path = os.path.join(source_folder, matched_media_filename)
                 destination_media_path = os.path.join(destination_folder, unique_new_filename)
 
@@ -184,6 +191,7 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
                 matched_media_files.add(matched_media_filename)
                 unmatched_media_file_set.discard(matched_media_filename)
                 match_report[metadata_filename] = (matched_media_filename, method_used)
+                base_name_to_datetime[os.path.splitext(matched_media_filename)[0].lower()] = local_datetime
 
             else:
                 print(f"No matching media file found for {metadata_filename}")
@@ -194,6 +202,31 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
             print(f"Error processing {metadata_filename}: {error}")
             unmatched_json_file_list.append(metadata_filename)
             match_report[metadata_filename] = (None, f"error: {error}")
+
+    # Second pass: match orphaned Live Photo videos (e.g. IMG_3118.MP4) using their
+    # companion photo's already-matched timestamp (e.g. from IMG_3118.HEIC.supplemental-metadata.json)
+    live_photo_matched = 0
+    for media_filename in list(unmatched_media_file_set):
+        base = os.path.splitext(media_filename)[0].lower()
+        if base in base_name_to_datetime:
+            local_datetime = base_name_to_datetime[base]
+            timestamped_base_name = local_datetime.strftime("%Y-%m-%d %H.%M.%S")
+            extension = os.path.splitext(media_filename)[1].lower()
+            unique_new_filename = generate_unique_filename(destination_folder, timestamped_base_name, extension, planned_destination_names)
+            source_media_path = os.path.join(source_folder, media_filename)
+            destination_media_path = os.path.join(destination_folder, unique_new_filename)
+            if dry_run:
+                print(f"[DRY RUN] Would copy: {media_filename} -> {unique_new_filename} (method: live_photo_pairing)")
+            else:
+                copy_ops.append((source_media_path, destination_media_path))
+                print(f"Matched: {media_filename} -> {unique_new_filename} (method: live_photo_pairing)")
+            matched_media_files.add(media_filename)
+            unmatched_media_file_set.discard(media_filename)
+            match_report[media_filename] = (media_filename, "live_photo_pairing")
+            live_photo_matched += 1
+
+    if live_photo_matched:
+        print(f"Live Photo pairing matched {live_photo_matched} additional media files.")
 
     # Execute all copies in parallel
     if copy_ops:

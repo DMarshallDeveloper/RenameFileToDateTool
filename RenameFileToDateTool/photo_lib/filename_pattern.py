@@ -10,6 +10,7 @@ The master library's filename convention is ``YYYY-MM-DD HH.MM.SS_N.ext`` where:
 Before this module, the same regex existed in 5 different forms across the codebase.
 """
 
+import os
 import re
 from datetime import datetime
 
@@ -87,3 +88,36 @@ def apply_placeholder_time_bump(filename: str, date_time: datetime) -> datetime:
     if PLACEHOLDER_FILENAME_RE.match(filename):
         return date_time.replace(hour=13, minute=0, second=0)
     return date_time
+
+
+def maybe_rename_placeholder(file_path: str, dry_run: bool = False) -> str | None:
+    """Rename a placeholder file's basename so its filename matches the EXIF
+    that ``apply_placeholder_time_bump`` produces.
+
+    Files named ``YYYY-01-01 00.00.00_N.ext`` would otherwise end up with EXIF
+    ``13:00:00`` (after the bump) but filename ``00.00.00`` — a confusing
+    asymmetry. This helper renames them in-place to ``YYYY-01-01 13.00.00_N.ext``
+    so the filename ≡ EXIF invariant always holds.
+
+    Returns the (possibly-new) path on success, or ``None`` if a rename was
+    needed but the target name already exists (caller should skip such files
+    to preserve the invariant).
+
+    Idempotent: a file already named ``13.00.00`` doesn't match the placeholder
+    regex, so the function leaves it alone.
+    """
+    filename = os.path.basename(file_path)
+    if not PLACEHOLDER_FILENAME_RE.match(filename):
+        return file_path
+
+    new_filename = filename.replace(' 00.00.00', ' 13.00.00', 1)
+    if new_filename == filename:
+        return file_path  # defensive: regex matched but substitution didn't change anything
+    new_path = os.path.join(os.path.dirname(file_path), new_filename)
+
+    if os.path.exists(new_path) and os.path.abspath(new_path) != os.path.abspath(file_path):
+        return None  # collision
+
+    if not dry_run:
+        os.rename(file_path, new_path)
+    return new_path

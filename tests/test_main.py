@@ -188,11 +188,19 @@ class TestOverseasPhotoEndToEnd(unittest.TestCase):
         path = os.path.join(self.tmpdir, '2026-01-15 14.30.45_1.jpg')
         self.assertEqual(read_exif_tag(path, 'DateTimeOriginal'), '2026:01:15 14:30:45')
 
-    def test_placeholder_midnight_bumped_in_exif(self):
-        # Filename is Jan 1 midnight — EXIF should be written with 13:00 instead
-        path = copy_fixture_image(self.tmpdir, name='2000-01-01 00.00.00_1.jpg')
+    def test_placeholder_midnight_bumped_in_exif_and_filename_renamed(self):
+        # Filename is Jan 1 midnight — EXIF should be written with 13:00 AND the
+        # file renamed to 13.00.00 so filename ≡ EXIF.
+        copy_fixture_image(self.tmpdir, name='2000-01-01 00.00.00_1.jpg')
         main.change_exif_date(self.tmpdir)
-        self.assertEqual(read_exif_tag(path, 'DateTimeOriginal'), '2000:01:01 13:00:00')
+
+        old_path = os.path.join(self.tmpdir, '2000-01-01 00.00.00_1.jpg')
+        new_path = os.path.join(self.tmpdir, '2000-01-01 13.00.00_1.jpg')
+        self.assertFalse(os.path.exists(old_path),
+                         "Placeholder file should have been renamed away from 00.00.00")
+        self.assertTrue(os.path.exists(new_path),
+                        "Placeholder file should have been renamed to 13.00.00")
+        self.assertEqual(read_exif_tag(new_path, 'DateTimeOriginal'), '2000:01:01 13:00:00')
 
 
 class TestMainAcceptsAllCanonicalExtensions(unittest.TestCase):

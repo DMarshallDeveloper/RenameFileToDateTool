@@ -73,6 +73,67 @@ class TestPlaceholderBump(unittest.TestCase):
         self.assertEqual(unchanged, datetime(2024, 1, 1, 14, 30, 0))
 
 
+class TestMaybeRenamePlaceholder(unittest.TestCase):
+    """maybe_rename_placeholder renames YYYY-01-01 00.00.00_N.ext files to
+    13.00.00_N.ext on disk so the filename matches the EXIF that
+    apply_placeholder_time_bump produces. Keeps the filename ≡ EXIF invariant."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp(prefix='test_rename_placeholder_')
+        self._shutil = shutil
+
+    def tearDown(self):
+        self._shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make(self, name):
+        import os
+        path = os.path.join(self.tmpdir, name)
+        with open(path, 'w') as f:
+            f.write('x')
+        return path
+
+    def test_placeholder_file_renamed_to_13(self):
+        import os
+        old = self._make('2011-01-01 00.00.00_5.jpg')
+        new = filename_pattern.maybe_rename_placeholder(old)
+        self.assertEqual(os.path.basename(new), '2011-01-01 13.00.00_5.jpg')
+        self.assertTrue(os.path.exists(new))
+        self.assertFalse(os.path.exists(old))
+
+    def test_non_placeholder_left_alone(self):
+        import os
+        path = self._make('2024-06-15 14.30.00_1.jpg')
+        result = filename_pattern.maybe_rename_placeholder(path)
+        self.assertEqual(result, path)
+        self.assertTrue(os.path.exists(path))
+
+    def test_already_13_left_alone(self):
+        # Idempotency: a file already at 13.00.00 doesn't match the placeholder regex
+        import os
+        path = self._make('2011-01-01 13.00.00_5.jpg')
+        result = filename_pattern.maybe_rename_placeholder(path)
+        self.assertEqual(result, path)
+        self.assertTrue(os.path.exists(path))
+
+    def test_collision_returns_none(self):
+        # If the target name already exists, refuse rather than silently overwriting.
+        old = self._make('2011-01-01 00.00.00_5.jpg')
+        self._make('2011-01-01 13.00.00_5.jpg')  # already-occupied target
+        result = filename_pattern.maybe_rename_placeholder(old)
+        self.assertIsNone(result)
+
+    def test_dry_run_does_not_rename(self):
+        import os
+        old = self._make('2011-01-01 00.00.00_5.jpg')
+        new = filename_pattern.maybe_rename_placeholder(old, dry_run=True)
+        self.assertEqual(os.path.basename(new), '2011-01-01 13.00.00_5.jpg')
+        # File still at original location — dry-run returned the planned name only
+        self.assertTrue(os.path.exists(old))
+        self.assertFalse(os.path.exists(new))
+
+
 class TestCanonicalFilenameRe(unittest.TestCase):
     """CANONICAL_FILENAME_RE is the strict ``YYYY-MM-DD HH.MM.SS_N.ext`` shape that
     DetectMalformedFileNames uses to flag drift from the master-library convention."""

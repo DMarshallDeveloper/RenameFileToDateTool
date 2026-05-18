@@ -170,23 +170,31 @@ class TestAuditAppliesPlaceholderBump(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_placeholder_file_audits_clean_after_main_writes_it(self):
+        # main.change_exif_date both bumps EXIF to 13:00 AND renames the file to
+        # 13.00.00 so the filename ≡ EXIF invariant holds. The audit should then
+        # find the renamed file clean — its filename time matches its EXIF directly,
+        # no placeholder-bump compensation needed.
         from photo_lib.exiftool_runner import get_metadata_for_tags
         import main
 
-        path = copy_fixture_image(self.tmpdir, name='2000-01-01 00.00.00_1.jpg')
+        copy_fixture_image(self.tmpdir, name='2000-01-01 00.00.00_1.jpg')
         main.change_exif_date(self.tmpdir)
+
+        renamed_path = os.path.join(self.tmpdir, '2000-01-01 13.00.00_1.jpg')
+        self.assertTrue(os.path.exists(renamed_path),
+                        "main.change_exif_date should rename the placeholder file")
 
         all_tags = (audit_master.IMAGE_LOCAL_TAGS + audit_master.VIDEO_UTC_TAGS
                     + audit_master.VIDEO_TZ_TAGS + audit_master.FILESYSTEM_TAGS
                     + audit_master.TZ_HINT_TAGS)
-        metadata = get_metadata_for_tags([path], all_tags)[0]
+        metadata = get_metadata_for_tags([renamed_path], all_tags)[0]
 
-        expected = audit_master.parse_filename_datetime('2000-01-01 00.00.00_1.jpg')
-        checks = audit_master.check_file('2000-01-01 00.00.00_1.jpg', metadata,
+        expected = audit_master.parse_filename_datetime('2000-01-01 13.00.00_1.jpg')
+        checks = audit_master.check_file('2000-01-01 13.00.00_1.jpg', metadata,
                                          expected, is_video=False)
         self.assertTrue(
             all(ok for *_x, ok in checks),
-            f"Placeholder-bumped file flagged as bad. Mismatches: "
+            f"Renamed placeholder file flagged as bad. Mismatches: "
             f"{[c for c in checks if not c[3]]}",
         )
 

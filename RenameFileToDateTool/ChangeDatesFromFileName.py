@@ -25,6 +25,7 @@ from photo_lib.exiftool_runner import get_all_metadata, write_exif_dates_batch
 from photo_lib.extensions import is_image, is_video, MEDIA_EXTENSIONS, normalize_extension
 from photo_lib.filename_pattern import (
     apply_placeholder_time_bump,
+    maybe_rename_placeholder,
     parse_filename_datetime,
 )
 from photo_lib.logging_setup import configure_logging
@@ -75,7 +76,23 @@ def change_exif_date(directory: str, dry_run: bool = False):
 
     for file_path, filename, date_time, ext in candidates:
         md = metadata_by_name.get(filename, {})
-        date_time = apply_placeholder_time_bump(filename, date_time)
+        bumped = apply_placeholder_time_bump(filename, date_time)
+
+        # If the bump moved the time, also rename so filename ≡ EXIF.
+        if bumped != date_time:
+            new_path = maybe_rename_placeholder(file_path, dry_run=dry_run)
+            if new_path is None:
+                logger.warning(
+                    "Cannot rename placeholder %s (target exists). Skipping its EXIF "
+                    "write to preserve the filename ≡ EXIF invariant.", filename
+                )
+                continue
+            if new_path != file_path:
+                logger.info("%s[RENAME] %s -> %s",
+                            prefix, os.path.relpath(file_path),
+                            os.path.relpath(new_path))
+                file_path = new_path
+        date_time = bumped
         file_tz = detect_file_tz(md, default_tz=LOCAL_TIMEZONE)
 
         if is_image(ext):

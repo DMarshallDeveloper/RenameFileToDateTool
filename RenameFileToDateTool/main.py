@@ -45,6 +45,7 @@ from photo_lib.extensions import (
 from photo_lib.filename_pattern import (
     PLACEHOLDER_FILENAME_RE,
     apply_placeholder_time_bump,
+    maybe_rename_placeholder,
     parse_filename_datetime,
 )
 from photo_lib.tag_modes import (
@@ -219,7 +220,24 @@ def change_exif_date(directory: str, dry_run: bool = False):
 
         # Bump placeholder Jan-1-midnight dates to 1pm to avoid Dec-31-previous-year
         # rollover in UTC-respecting viewers.
-        date_time = apply_placeholder_time_bump(file, date_time)
+        bumped = apply_placeholder_time_bump(file, date_time)
+
+        # If the bump moved the time, also rename the file on disk so the
+        # filename ≡ EXIF invariant holds. (Mode 1 is the only entry point that
+        # writes a placeholder bump, so it's the only one that needs to rename.)
+        if bumped != date_time:
+            new_path = maybe_rename_placeholder(file_path, dry_run=dry_run)
+            if new_path is None:
+                logger.warning(
+                    "Cannot rename placeholder %s (target exists). Skipping its EXIF "
+                    "write to preserve the filename ≡ EXIF invariant.", file
+                )
+                continue
+            if new_path != file_path:
+                logger.info("%s[RENAME] %s -> %s", prefix, file, os.path.basename(new_path))
+                file_path = new_path
+                file = os.path.basename(new_path)
+        date_time = bumped
         file_tz = detect_file_tz(file_metadata, default_tz=LOCAL_TIMEZONE)
 
         ext = normalize_extension(file_metadata.get("FileTypeExtension", ""))

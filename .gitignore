@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+
+# Runtime logs (regenerated each run by main.py / ChangeDatesFromFileName.py).
+# The logs/ folder itself is kept in git via a .gitkeep so the path exists; only its
+# contents are ignored.
+RenameFileToDateTool/logs/*
+!RenameFileToDateTool/logs/.gitkeep
+*.log
+RenameFileToDateTool/logging_file.txt
+RenameFileToDateTool/error_log.txt
+
+# Large bundled binaries — fetched on demand via bin/download.ps1
+# (exiftool.exe stays committed because it's small enough)
+RenameFileToDateTool/bin/ffmpeg.exe
+RenameFileToDateTool/bin/ffprobe.exe
+
+# OS junk
+.DS_Store
+Thumbs.db

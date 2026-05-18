@@ -1,4 +1,4 @@
-"""Shared EXIF-from-filename writer used by ``main.py`` Mode 1 and
+"""Shared EXIF-from-filename writer used by ``write_exif_from_filename.py`` Mode 1 and
 ``ChangeDatesFromFileName.py``.
 
 Both callers do the same thing — for each candidate file, parse the date out of
@@ -39,7 +39,7 @@ def write_exif_for_files(file_paths, dry_run: bool = False, path_for_log=None) -
 
     ``path_for_log``: callable mapping a full path to a display string for log
     lines. Defaults to ``os.path.basename`` (cleaner output for single-folder
-    callers like ``main.py``). Pass ``os.path.relpath`` for recursive callers
+    callers like ``write_exif_from_filename.py``). Pass ``os.path.relpath`` for recursive callers
     that need to disambiguate same-named files in different folders.
 
     Files whose filename doesn't parse as a date, or whose extension isn't

@@ -4,7 +4,7 @@ Walks every subfolder under the picked directory and moves every file up to the
 top level. Name collisions get a ``_1``, ``_2`` etc suffix so nothing's lost.
 
 Useful when a phone photo dump arrives with random subfolder structure and you
-want everything in one place before running ``main.py`` on it.
+want everything in one place before running ``write_exif_from_filename.py`` on it.
 
 Run with ``python BringFilesToTopLevelDirectory.py``.
 """

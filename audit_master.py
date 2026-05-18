@@ -11,7 +11,7 @@ This script samples a few files per (year, extension) for the EXIF check
 (``check_file``) and walks every file for the structural checks
 (``check_extension_mismatches``, ``check_year_folder_mismatches``,
 ``check_non_canonical_filenames``). It prints a per-folder verdict plus a
-list of structural anomalies you can act on with ``main.py`` (mode 1),
+list of structural anomalies you can act on with ``write_exif_from_filename.py`` (mode 1),
 ``ChangeDatesFromFileName.py``, ``ConvertUnwantedFileTypesToDifferentFormat.py``,
 or a one-off rename.
 
@@ -25,8 +25,9 @@ Two subtleties the EXIF check knows about (matching the writer's behavior):
      every overseas photo would falsely show as ``NEEDS FIX`` and a user trying to
      "re-fix" it would actually corrupt the metadata.
   2. Jan-1 placeholder bump. Filenames like ``2000-01-01 00.00.00_1.jpg`` are
-     written by main.py with EXIF time = 13:00 (so the date doesn't roll back to
-     Dec 31 in UTC viewers). The audit applies the same bump before comparing.
+     written by ``write_exif_from_filename.py`` with EXIF time = 13:00 (so the
+     date doesn't roll back to Dec 31 in UTC viewers) AND the file is renamed
+     to match. The audit applies the same bump before comparing legacy files.
 
 Run with ``python audit_master.py``. Edit ``photo_lib/config.py`` (set
 ``MASTER_ROOT``) if your master library lives elsewhere.
@@ -71,8 +72,9 @@ SAMPLES_PER_TYPE = AUDIT_SAMPLES_PER_TYPE
 # one place automatically updates audit coverage.
 #
 # DateCreated is excluded from audit comparison: exiftool stores it as date-only
-# ("2000:01:01") in some XMP/IPTC namespaces, even when written with full time. main.py
-# still writes it (for completeness), but a strict equality check produces false bads.
+# ("2000:01:01") in some XMP/IPTC namespaces, even when written with full time.
+# The writer still writes it (for completeness), but a strict equality check
+# produces false bads.
 _AUDIT_EXCLUDED_IMAGE_TAGS = {"DateCreated"}
 IMAGE_LOCAL_TAGS = [
     tag for tag, mode in IMAGE_TAG_MODES.items()
@@ -132,11 +134,12 @@ def to_local_str(dt):
 def check_file(filename, metadata, expected_dt, is_video):
     """Return list of ``(tag, expected, actual, ok)`` tuples.
 
-    Applies the same placeholder-bump and TZ-detection logic as main.py so files
-    written correctly by main.py audit clean.
+    Applies the same placeholder-bump and TZ-detection logic as
+    ``write_exif_from_filename.py`` so files written correctly by the writer
+    audit clean.
     """
     results = []
-    # Apply the same Jan-1 placeholder bump main.py applies when writing. Without this,
+    # Apply the same Jan-1 placeholder bump write_exif_from_filename.py applies when writing. Without this,
     # a 2000-01-01 file with EXIF correctly bumped to 13:00 would be flagged as bad.
     expected_dt = apply_placeholder_time_bump(filename, expected_dt)
     # Detect the photo's true TZ from its existing metadata (CreationDate offset,
@@ -416,7 +419,7 @@ def main(master_root: str = MASTER_ROOT):
     logger.info("=" * 72)
     logger.info("SUMMARY")
     logger.info("=" * 72)
-    logger.info("Folders to run main.py option 1 on: %d", len(needs_fix))
+    logger.info("Folders to run write_exif_from_filename.py on: %d", len(needs_fix))
     for y in needs_fix:
         logger.info("  - %s", y)
     logger.info("Folders already correct: %d", len(clean))

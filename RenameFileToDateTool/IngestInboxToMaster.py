@@ -7,7 +7,7 @@ land first in ``D:\\Files\\Pictures and Videos\\_Inbox\\`` so it's always clear
 what's "new and unmerged" vs what's already in the library.
 
 This script handles step 2 of the ingest workflow:
-  1. (You do this elsewhere) Run ``main.py`` or
+  1. (You do this elsewhere) Run ``write_exif_from_filename.py`` or
      ``UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py`` to give every file
      in ``_Inbox/`` its canonical ``YYYY-MM-DD HH.MM.SS_N.ext`` name.
   2. Run this script:
@@ -184,7 +184,7 @@ def main(dry_run: bool = False, master_path: str | None = None,
     if not moves:
         logger.info("No files with parseable year names found in the inbox.")
         if unparseable:
-            logger.info("(%d files were unparseable — rename them with main.py first.)", len(unparseable))
+            logger.info("(%d files were unparseable — rename them with rename_files_from_exif.py first.)", len(unparseable))
         return
 
     summarise_plan(moves, unparseable)

@@ -14,7 +14,7 @@ env/
 .vscode/
 *.swp
 
-# Runtime logs (regenerated each run by main.py / ChangeDatesFromFileName.py).
+# Runtime logs (regenerated each run by the workhorse scripts).
 # The logs/ folder itself is kept in git via a .gitkeep so the path exists; only its
 # contents are ignored.
 RenameFileToDateTool/logs/*

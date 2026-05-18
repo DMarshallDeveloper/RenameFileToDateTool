@@ -55,7 +55,7 @@ REAL_EXTENSION_RE = re.compile(rf"^(.*?\.({MEDIA_EXTENSIONS}))", re.IGNORECASE)
 def generate_unique_filename(output_folder: str, base_name: str, extension: str, planned_names: set) -> str:
     """Return a filename in the master library's format: '<base_name>_<N><extension>'.
 
-    Always includes an _N suffix starting at 1, matching main.py's convention, so every file
+    Always includes an _N suffix starting at 1, matching the canonical convention, so every file
     in the master library has the same shape regardless of whether the timestamp is unique.
     """
     counter = 1

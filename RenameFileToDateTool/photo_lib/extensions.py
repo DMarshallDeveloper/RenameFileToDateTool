@@ -6,7 +6,7 @@ from ``os.path.splitext`` (which include the leading dot) should ``.lstrip('.')`
 before membership-testing.
 
 Why centralize: before this module, ~6 files each defined their own set, and they
-drifted — ``main.py`` was missing heif/3gp/m4v and would silently reject those files.
+drifted — ``write_exif_from_filename.py`` was missing heif/3gp/m4v and would silently reject those files.
 """
 
 IMAGE_EXTENSIONS = frozenset({

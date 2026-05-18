@@ -35,7 +35,7 @@ CANONICAL_FILENAME_RE = re.compile(
 )
 
 # Placeholder filenames: YYYY-01-01 00.00.00 means "we don't know the time of year".
-# main.py bumps these to 13:00 NZ so they don't roll back to Dec 31 in UTC viewers.
+# the writer bumps these to 13:00 NZ so they don't roll back to Dec 31 in UTC viewers.
 PLACEHOLDER_FILENAME_RE = re.compile(r'^\d{4}-01-01 00\.00\.00')
 
 

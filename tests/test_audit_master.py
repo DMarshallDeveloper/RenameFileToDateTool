@@ -37,7 +37,7 @@ class TestCheckFileTZAware(unittest.TestCase):
     def test_melbourne_video_with_creationdate_offset_passes_audit(self):
         # Simulate metadata as exiftool would emit it for a correctly-stored Melbourne video.
         # All 6 UTC tags must be set — the audit derives its tag list from VIDEO_TAG_MODES
-        # which includes the Media/Track *Modify* tags too (main.py writes them).
+        # which includes the Media/Track *Modify* tags too (the writer writes them).
         metadata = {
             "MediaCreateDate": "2026:04:09 09:52:51",     # UTC of capture
             "MediaModifyDate": "2026:04:09 09:52:51",
@@ -122,7 +122,7 @@ class TestCheckFileTZAware(unittest.TestCase):
 
 
 class TestCheckFileEndToEnd(unittest.TestCase):
-    """Sanity check that a real overseas video, written by main.change_exif_date and
+    """Sanity check that a real overseas video, written by write_exif_from_filename.change_exif_date and
     then re-read with exiftool, audits clean."""
 
     def setUp(self):
@@ -132,14 +132,14 @@ class TestCheckFileEndToEnd(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_melbourne_video_round_trip_audits_clean(self):
-        import main
+        import write_exif_from_filename
         from photo_lib.exiftool_runner import get_metadata_for_tags
         path = make_video_with_tz(
             self.tmpdir, '2026-04-09 19.52.51_1.mov',
             datetime_utc='2026:04:09 09:52:51',
             datetime_local='2026:04:09 19:52:51',
             offset='+10:00')
-        main.change_exif_date(self.tmpdir)
+        write_exif_from_filename.change_exif_date(self.tmpdir)
 
         all_tags = (audit_master.IMAGE_LOCAL_TAGS + audit_master.VIDEO_UTC_TAGS
                     + audit_master.VIDEO_TZ_TAGS + audit_master.FILESYSTEM_TAGS
@@ -170,19 +170,19 @@ class TestAuditAppliesPlaceholderBump(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_placeholder_file_audits_clean_after_main_writes_it(self):
-        # main.change_exif_date both bumps EXIF to 13:00 AND renames the file to
+        # write_exif_from_filename.change_exif_date both bumps EXIF to 13:00 AND renames the file to
         # 13.00.00 so the filename ≡ EXIF invariant holds. The audit should then
         # find the renamed file clean — its filename time matches its EXIF directly,
         # no placeholder-bump compensation needed.
         from photo_lib.exiftool_runner import get_metadata_for_tags
-        import main
+        import write_exif_from_filename
 
         copy_fixture_image(self.tmpdir, name='2000-01-01 00.00.00_1.jpg')
-        main.change_exif_date(self.tmpdir)
+        write_exif_from_filename.change_exif_date(self.tmpdir)
 
         renamed_path = os.path.join(self.tmpdir, '2000-01-01 13.00.00_1.jpg')
         self.assertTrue(os.path.exists(renamed_path),
-                        "main.change_exif_date should rename the placeholder file")
+                        "write_exif_from_filename.change_exif_date should rename the placeholder file")
 
         all_tags = (audit_master.IMAGE_LOCAL_TAGS + audit_master.VIDEO_UTC_TAGS
                     + audit_master.VIDEO_TZ_TAGS + audit_master.FILESYSTEM_TAGS
@@ -219,11 +219,11 @@ class TestAuditMainE2E(unittest.TestCase):
         return paths
 
     def test_clean_tree_reports_ok(self):
-        # Image, written correctly by main.change_exif_date — should audit clean.
-        import main
+        # Image, written correctly by write_exif_from_filename.change_exif_date — should audit clean.
+        import write_exif_from_filename
         from tests._fixture_helpers import copy_fixture_image
         self._seed_year(2026, [('2026-03-20 10.15.30_1.jpg', copy_fixture_image)])
-        main.change_exif_date(os.path.join(self.master, '2026'))
+        write_exif_from_filename.change_exif_date(os.path.join(self.master, '2026'))
 
         with self.assertLogs('photo_lib', level='INFO') as cm:
             audit_master.main(master_root=self.master)

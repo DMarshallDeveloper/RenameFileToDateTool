@@ -1,18 +1,16 @@
-"""ChangeDatesFromFileName.py — bulk EXIF-from-filename rewriter (recursive).
+"""ChangeDatesFromFileName.py — recursive EXIF-from-filename rewriter.
 
-This is the more aggressive version of ``main.py``'s mode 1. The difference:
-
-  - It RECURSES into subfolders, so you can point it at the whole master library
-    (``D:\\Files\\Pictures and Videos\\``) and it'll fix every year folder in one pass.
-  - It SKIPS files whose names don't look like dates — no prompt to choose mode.
+This is the recursive sibling of ``write_exif_from_filename.py``: same shared
+writer logic, just walking every subfolder instead of one. Point it at the
+master library root and it fixes every year folder in one pass, silently
+skipping files whose names don't look like dates.
 
 When to use which:
-  - ``main.py`` mode 1 → one folder, with the interactive 0/1 prompt
-  - ``ChangeDatesFromFileName.py`` → unattended recursive sweep of the master library
+  - ``write_exif_from_filename.py`` → one folder
+  - ``ChangeDatesFromFileName.py`` → recursive sweep of the master library
 
-Both share the same writer logic (``photo_lib.exiftool_runner.write_exif_dates_batch``)
-and the same TZ detection (``photo_lib.timezone_detection.detect_file_tz``), so they
-produce identical results on identical inputs.
+Both share the implementation in ``photo_lib.exif_writer.write_exif_for_files``,
+so behavior stays in lockstep.
 
 Run with ``python ChangeDatesFromFileName.py``.
 """
@@ -33,7 +31,7 @@ logger = logging.getLogger("photo_lib")
 # Back-compat alias: extract_date_from_filename used to live here; tests still import it.
 def extract_date_from_filename(filename):
     """Pull a date+time from the filename. Accepts both ``YYYY-MM-DD HH.MM.SS``
-    (main.py format) and ``YYYY-MM-DD_HH-MM-SS`` (older takeout format)."""
+    (canonical format) and ``YYYY-MM-DD_HH-MM-SS`` (older Takeout format)."""
     return parse_filename_datetime(filename)
 
 

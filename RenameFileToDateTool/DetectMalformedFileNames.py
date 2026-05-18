@@ -5,7 +5,7 @@ extension). This script walks the picked folder and prints the full path of any
 file that doesn't match that exact shape — usually a file you forgot to rename
 or one that came from a script that used an older naming format.
 
-Read-only. Use the output as a worklist for ``main.py`` or
+Read-only. Use the output as a worklist for ``write_exif_from_filename.py`` or
 ``ChangeDatesFromFileName.py``.
 
 Run with ``python DetectMalformedFileNames.py``.

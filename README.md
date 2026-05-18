@@ -38,7 +38,9 @@ open; pick the folder you want to operate on.
 
 ```
 cd RenameFileToDateTool
-python main.py
+python rename_files_from_exif.py --path <some-folder>
+# or:
+python write_exif_from_filename.py --path <some-folder>
 ```
 
 ## Repository layout
@@ -80,23 +82,27 @@ RenameFileToDateTool/                 ← repo root
    straight into a year folder. Always route through `_Inbox/` first so it's
    clear what's "new and unmerged" vs what's already in the library.
 
-## The two key scripts (start here)
+## The three key scripts (start here)
 
-### `main.py` — interactive rename + metadata-fix
+### `rename_files_from_exif.py` — rename to canonical names
 
-Two modes:
-  - **Mode 0** (rename from EXIF): every file in the picked folder gets renamed
-    to `YYYY-MM-DD HH.MM.SS_N.ext`, with the date pulled from its embedded
-    metadata. Idempotent — re-running on an already-renamed folder is a no-op.
-  - **Mode 1** (write EXIF from filename): the opposite — filenames stay,
-    metadata gets rewritten to match. Use when filenames are correct but
-    metadata is broken (typical after Google Takeout).
+Every file in the picked folder gets renamed to `YYYY-MM-DD HH.MM.SS_N.ext`,
+with the date pulled from its embedded metadata. Idempotent — re-running on
+an already-renamed folder is a no-op.
+
+### `write_exif_from_filename.py` — sync metadata to filename
+
+The mirror image: filenames stay, embedded metadata gets rewritten to match.
+Use when filenames are correct but EXIF is broken (typical after Google
+Takeout). For a recursive variant that sweeps every year folder in one pass,
+see `ChangeDatesFromFileName.py`.
 
 ### `audit_master.py` — read-only diagnostic
 
 Samples a few files from each year folder, checks whether filename and EXIF
-match, prints a per-folder verdict (`OK` or `NEEDS FIX`). Use this to find
-folders that need a `main.py` Mode 1 pass. **Doesn't modify anything.**
+match, plus catches structural drift (extension mismatches, files in the wrong
+year folder, non-canonical names). Use this to find folders that need a
+`write_exif_from_filename.py` pass. **Doesn't modify anything.**
 
 ## Pipeline scripts (Google Takeout → master library)
 
@@ -163,7 +169,7 @@ orchestrator just chains them together.
 - **`FindBurstFiles.py`** — list iOS burst-mode photos (sharing a `BurstUUID`).
 - **`FindFolderDifferences.py`** — print files unique to folder A vs folder B.
 - **`ListAllFilesInFolder.py`** — trivial: print every filename under a folder.
-- **`ChangeDatesFromFileName.py`** — recursive version of `main.py` Mode 1.
+- **`ChangeDatesFromFileName.py`** — recursive version of `write_exif_from_filename.py`.
 
 ## The shared library — `photo_lib/`
 
@@ -205,9 +211,10 @@ derive the local TZ. Again falls back to NZ when there's no GPS.
 Some old photos only have a year known, not a date. Their filenames look like
 `2000-01-01 00.00.00_1.jpg`. If you write `2000-01-01 00:00:00` to EXIF and
 then view it in a UTC-respecting viewer, NZ-local midnight Jan 1 = Dec 31 in
-UTC, so the photo rolls back to 1999. To prevent that, `main.py` rewrites the
-EXIF time to 13:00 NZ-equivalent (which equals 00:00 UTC exactly during NZDT),
-so the date lands cleanly on Jan 1 in every viewer.
+UTC, so the photo rolls back to 1999. To prevent that, `write_exif_from_filename.py`
+rewrites the EXIF time to 13:00 NZ-equivalent (which equals 00:00 UTC exactly
+during NZDT) AND renames the file to match, so the date lands cleanly on Jan 1
+in every viewer and the filename ≡ EXIF invariant holds.
 
 The audit script knows about this bump too — see
 `audit_master.check_file`.
@@ -225,7 +232,7 @@ to test that file):
 
 | Test file                                            | Tests                                                          |
 |------------------------------------------------------|----------------------------------------------------------------|
-| `tests/test_main.py`                                 | `main.py` rename + change_exif_date + overseas + extensions    |
+| `tests/test_workflow.py`                             | rename + write-EXIF round trip, overseas, extensions           |
 | `tests/test_change_dates_from_filename.py`           | `ChangeDatesFromFileName.py` recursive variant                 |
 | `tests/test_audit_master.py`                         | `audit_master.py` per-file check + full main() run + bumps     |
 | `tests/test_takeout_matching.py`                     | `UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py`         |

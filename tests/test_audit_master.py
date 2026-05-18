@@ -245,5 +245,83 @@ class TestAuditMainE2E(unittest.TestCase):
         self.assertIn('2027  [NEEDS FIX]', output)
 
 
+class TestStructuralChecks(unittest.TestCase):
+    """The structural checks walk every file (no sampling) and flag problems
+    independent of EXIF date drift: wrong extension, wrong year folder, names
+    that don't match the canonical pattern."""
+
+    def setUp(self):
+        self.master = tempfile.mkdtemp(prefix='test_audit_structural_')
+
+    def tearDown(self):
+        shutil.rmtree(self.master, ignore_errors=True)
+
+    def _make_file(self, year, name, content=b'fake'):
+        folder = os.path.join(self.master, year)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, 'wb') as f:
+            f.write(content)
+        return path
+
+    def test_extension_mismatch_detected(self):
+        # Drop a real JPEG fixture under a .heic name — exiftool should report
+        # the actual format is jpg, not heic.
+        os.makedirs(os.path.join(self.master, '2024'), exist_ok=True)
+        copy_fixture_image(os.path.join(self.master, '2024'),
+                           name='2024-06-15 14.30.00_1.heic')
+        mismatches = audit_master.check_extension_mismatches(['2024'], self.master)
+        self.assertEqual(len(mismatches), 1)
+        folder, fname, claimed, actual = mismatches[0]
+        self.assertEqual(folder, '2024')
+        self.assertEqual(claimed, 'heic')
+        self.assertEqual(actual, 'jpg')
+
+    def test_extension_match_not_flagged(self):
+        # Real JPEG with a .jpg name → no mismatch.
+        os.makedirs(os.path.join(self.master, '2024'), exist_ok=True)
+        copy_fixture_image(os.path.join(self.master, '2024'),
+                           name='2024-06-15 14.30.00_1.jpg')
+        self.assertEqual(audit_master.check_extension_mismatches(['2024'], self.master), [])
+
+    def test_year_folder_mismatch_detected(self):
+        # 2023-dated file living in the 2024 folder
+        self._make_file('2024', '2023-12-15 10.00.00_1.jpg')
+        bad = audit_master.check_year_folder_mismatches(['2024'], self.master)
+        self.assertEqual(len(bad), 1)
+        folder, fname, file_year = bad[0]
+        self.assertEqual(folder, '2024')
+        self.assertEqual(file_year, 2023)
+
+    def test_year_folder_matches_no_flag(self):
+        self._make_file('2024', '2024-06-15 14.30.00_1.jpg')
+        self.assertEqual(audit_master.check_year_folder_mismatches(['2024'], self.master), [])
+
+    def test_bundle_folder_accepts_its_range(self):
+        # The "2000 - 2010" bundle should accept any year in BUNDLED_EARLY_YEAR_RANGE
+        self._make_file('2000 - 2010', '2007-03-15 12.00.00_1.jpg')
+        self.assertEqual(
+            audit_master.check_year_folder_mismatches(['2000 - 2010'], self.master),
+            [],
+        )
+
+    def test_non_canonical_media_name_detected(self):
+        # Old underscore format — parseable but not canonical
+        self._make_file('2024', '2024-06-15_14-30-00_1.jpg')
+        bad = audit_master.check_non_canonical_filenames(['2024'], self.master)
+        self.assertEqual(len(bad), 1)
+        self.assertEqual(bad[0][1], '2024-06-15_14-30-00_1.jpg')
+
+    def test_non_media_files_not_flagged_for_canonical(self):
+        # A PDF or other non-media file shouldn't be flagged just because it
+        # doesn't match the photo naming convention.
+        self._make_file('2024', "Dad's Child Photos.pdf")
+        self.assertEqual(audit_master.check_non_canonical_filenames(['2024'], self.master), [])
+
+    def test_canonical_media_name_not_flagged(self):
+        self._make_file('2024', '2024-06-15 14.30.00_1.jpg')
+        self.assertEqual(audit_master.check_non_canonical_filenames(['2024'], self.master), [])
+
+
 if __name__ == '__main__':
     unittest.main()

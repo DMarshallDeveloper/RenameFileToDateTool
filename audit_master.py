@@ -1,17 +1,23 @@
-"""audit_master.py — read-only diagnostic: which year folders need re-tagging?
+"""audit_master.py — read-only diagnostic: where has the library drifted?
 
-The master library should hold an invariant: every file's filename matches its
-embedded EXIF/QuickTime dates. After a Google Takeout round-trip, a manual edit,
-or running an older version of one of these scripts, files can drift out of sync.
+The master library should hold these invariants:
+  - Every file's filename matches its embedded EXIF/QuickTime dates.
+  - Filename extensions match the file's actual content (no ``.png`` files
+    that are JPEG bytes, no ``.heic`` files that are JPEG bytes, etc).
+  - Every file lives in the year folder its filename names.
+  - Every media filename matches ``YYYY-MM-DD HH.MM.SS_N.ext``.
 
-This script samples a few files of each type from each year folder, asks
-exiftool what their actual dates are, compares against what the filename says,
-and prints a report you can act on with ``main.py`` (mode 1) or
-``ChangeDatesFromFileName.py``.
+This script samples a few files per (year, extension) for the EXIF check
+(``check_file``) and walks every file for the structural checks
+(``check_extension_mismatches``, ``check_year_folder_mismatches``,
+``check_non_canonical_filenames``). It prints a per-folder verdict plus a
+list of structural anomalies you can act on with ``main.py`` (mode 1),
+``ChangeDatesFromFileName.py``, ``ConvertUnwantedFileTypesToDifferentFormat.py``,
+or a one-off rename.
 
-**It does NOT modify anything.** Safe to run anytime to get a status report.
+**Read-only — modifies nothing.** Safe to run anytime.
 
-Two subtleties the audit knows about (matching the writer's behavior):
+Two subtleties the EXIF check knows about (matching the writer's behavior):
 
   1. Per-file timezone. If a video's ``CreationDate`` carries an explicit ``+10:00``
      (because it was shot in Melbourne), the audit checks its UTC tags against
@@ -37,11 +43,19 @@ SCRIPT_DIR = os.path.join(REPO_ROOT, "RenameFileToDateTool")
 sys.path.insert(0, SCRIPT_DIR)
 
 from photo_lib.binaries import EXIFTOOL
-from photo_lib.config import AUDIT_SAMPLES_PER_TYPE, MASTER_ROOT
+from photo_lib.config import (
+    AUDIT_SAMPLES_PER_TYPE,
+    BUNDLED_EARLY_FOLDER,
+    BUNDLED_EARLY_YEAR_RANGE,
+    MASTER_ROOT,
+)
 from photo_lib.exiftool_runner import get_metadata_for_tags
+from photo_lib.extensions import is_media, normalize_extension
 from photo_lib.filename_pattern import (
+    CANONICAL_FILENAME_RE,
     FILENAME_PARTS_RE,
     apply_placeholder_time_bump,
+    parse_filename_year,
 )
 from photo_lib.logging_setup import configure_logging
 from photo_lib.tag_modes import IMAGE_TAG_MODES, VIDEO_TAG_MODES, FILESYSTEM_TAGS
@@ -155,6 +169,135 @@ def check_file(filename, metadata, expected_dt, is_video):
     return results
 
 
+# ---------------------------------------------------------------------------
+# Structural checks (independent of EXIF date comparison).
+#
+# These walk every file in the year folders (no sampling) and flag structural
+# problems that the per-file EXIF check can't catch directly, or only catches
+# as opaque "tag empty" symptoms. Cheap to run alongside the existing audit
+# because they share the same exiftool batch read (for the extension check)
+# or no exiftool at all (for the structural checks).
+# ---------------------------------------------------------------------------
+
+
+def _allowed_years_for_folder(folder_name: str):
+    """Return the set of filename years that legitimately belong in this folder.
+
+    Most year folders match a single year (``"2024"`` → ``{2024}``). The early
+    bundle folder (``"2000 - 2010"`` by default) covers a configured range.
+    Returns ``None`` for folders we don't recognise (e.g. ``"_Inbox"``) —
+    callers should skip those.
+    """
+    try:
+        return {int(folder_name)}
+    except ValueError:
+        if folder_name == BUNDLED_EARLY_FOLDER:
+            return set(range(*BUNDLED_EARLY_YEAR_RANGE))
+        return None
+
+
+def check_extension_mismatches(year_folders, master_root):
+    """Return list of (folder, filename, claimed_ext, actual_ext) for files whose
+    filename extension doesn't match the format exiftool detects inside.
+
+    Catches things like ``.png`` files that are actually JPEGs (a common iOS
+    screenshot / Drive sync artifact) — which silently break Mode 1 writes
+    because exiftool refuses to write to a container that doesn't match its
+    declared format.
+    """
+    paths = []
+    for year in year_folders:
+        folder = os.path.join(master_root, year)
+        for f in sorted(os.listdir(folder)):
+            p = os.path.join(folder, f)
+            if os.path.isfile(p):
+                paths.append(p)
+
+    if not paths:
+        return []
+
+    metadata_list = get_metadata_for_tags(paths, ['FileTypeExtension'])
+
+    mismatches = []
+    for entry in metadata_list:
+        src = entry.get('SourceFile', '').replace('/', os.sep)
+        name_ext = os.path.splitext(src)[1].lower().lstrip('.')
+        actual = (entry.get('FileTypeExtension') or '').lower()
+        if not actual or name_ext == actual:
+            continue
+        # Treat .jpg and .jpeg as equivalent — they ARE the same format,
+        # only the spelling differs and most tooling handles both.
+        if {name_ext, actual} == {'jpg', 'jpeg'}:
+            continue
+        folder = os.path.basename(os.path.dirname(src))
+        filename = os.path.basename(src)
+        mismatches.append((folder, filename, name_ext, actual))
+    return mismatches
+
+
+def check_year_folder_mismatches(year_folders, master_root):
+    """Return list of (folder, filename, parsed_year) for files whose filename
+    year doesn't match the folder they live in.
+
+    Catches files moved into the wrong year folder by mistake (e.g. a
+    ``2023-…`` file ended up under ``2024/``). Skips files whose names don't
+    carry a parseable year — those are handled by the canonical-name check.
+    """
+    bad = []
+    for folder_name in year_folders:
+        allowed = _allowed_years_for_folder(folder_name)
+        if allowed is None:
+            continue
+        folder = os.path.join(master_root, folder_name)
+        for f in sorted(os.listdir(folder)):
+            p = os.path.join(folder, f)
+            if not os.path.isfile(p):
+                continue
+            file_year = parse_filename_year(f)
+            if file_year is None:
+                continue
+            if file_year not in allowed:
+                bad.append((folder_name, f, file_year))
+    return bad
+
+
+def check_non_canonical_filenames(year_folders, master_root):
+    """Return list of (folder, filename) for media files whose names don't
+    match the canonical ``YYYY-MM-DD HH.MM.SS_N.ext`` pattern.
+
+    Non-media files (``.pdf``, leftover ``.txt``s, etc.) are intentionally
+    ignored — only flag files that *should* match the convention.
+    """
+    bad = []
+    for folder_name in year_folders:
+        folder = os.path.join(master_root, folder_name)
+        for f in sorted(os.listdir(folder)):
+            p = os.path.join(folder, f)
+            if not os.path.isfile(p):
+                continue
+            ext = normalize_extension(os.path.splitext(f)[1])
+            if not is_media(ext):
+                continue
+            if not CANONICAL_FILENAME_RE.match(f):
+                bad.append((folder_name, f))
+    return bad
+
+
+def _report_structural_findings(title, items, formatter, level=logging.WARNING):
+    """Helper to print one of the structural-issue sections, capped at 20 examples."""
+    if not items:
+        return
+    logger.log(level, "")
+    logger.log(level, "=" * 72)
+    logger.log(level, title)
+    logger.log(level, "=" * 72)
+    logger.log(level, "%d files:", len(items))
+    for item in items[:20]:
+        logger.log(level, "  %s", formatter(item))
+    if len(items) > 20:
+        logger.log(level, "  ... and %d more", len(items) - 20)
+
+
 def main(master_root: str = MASTER_ROOT):
     """Walk ``master_root``'s year folders and print a per-folder audit report.
 
@@ -247,6 +390,28 @@ def main(master_root: str = MASTER_ROOT):
             clean.append(year)
             logger.info("%s  [OK]  (%s)", year, ', '.join(v['types_ok']))
 
+    # Structural checks (every-file, not sampled): extension/content mismatches,
+    # files in the wrong year folder, names that don't match the canonical pattern.
+    ext_mismatches = check_extension_mismatches(year_folders, master_root)
+    year_mismatches = check_year_folder_mismatches(year_folders, master_root)
+    non_canonical = check_non_canonical_filenames(year_folders, master_root)
+
+    _report_structural_findings(
+        "EXTENSION / CONTENT MISMATCHES",
+        ext_mismatches,
+        lambda x: f"{x[0]}/{x[1]}  (named .{x[2]}, actually .{x[3]})",
+    )
+    _report_structural_findings(
+        "WRONG-YEAR-FOLDER FILES",
+        year_mismatches,
+        lambda x: f"{x[0]}/{x[1]}  (filename year {x[2]}, folder {x[0]})",
+    )
+    _report_structural_findings(
+        "NON-CANONICAL FILENAMES",
+        non_canonical,
+        lambda x: f"{x[0]}/{x[1]}",
+    )
+
     logger.info("")
     logger.info("=" * 72)
     logger.info("SUMMARY")
@@ -257,6 +422,11 @@ def main(master_root: str = MASTER_ROOT):
     logger.info("Folders already correct: %d", len(clean))
     for y in clean:
         logger.info("  - %s", y)
+    logger.info("")
+    logger.info("Structural issues (zero is the goal):")
+    logger.info("  Extension / content mismatches: %d", len(ext_mismatches))
+    logger.info("  Wrong-year-folder files:        %d", len(year_mismatches))
+    logger.info("  Non-canonical filenames:        %d", len(non_canonical))
 
 
 if __name__ == "__main__":

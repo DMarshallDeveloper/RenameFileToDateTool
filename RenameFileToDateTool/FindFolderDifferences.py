@@ -8,9 +8,10 @@ Useful for "did all my files copy across?" checks.
 Run with ``python FindFolderDifferences.py``.
 """
 
+import argparse
 import os
 
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import resolve_directory
 
 
 def get_files(folder):
@@ -42,8 +43,13 @@ def compare_folders(folder1, folder2):
 
 
 if __name__ == "__main__":
-    folder1 = choose_directory("Select the first folder")
-    folder2 = choose_directory("Select the second folder")
+    parser = argparse.ArgumentParser(description="Compare two folders' filenames (one level deep).")
+    parser.add_argument("--folder-a", help="First folder. If omitted, opens the Tk folder picker.")
+    parser.add_argument("--folder-b", help="Second folder. If omitted, opens the Tk folder picker.")
+    args = parser.parse_args()
+
+    folder1 = resolve_directory(args.folder_a, "Select the first folder")
+    folder2 = resolve_directory(args.folder_b, "Select the second folder")
 
     if folder1 and folder2 and os.path.isdir(folder1) and os.path.isdir(folder2):
         compare_folders(folder1, folder2)

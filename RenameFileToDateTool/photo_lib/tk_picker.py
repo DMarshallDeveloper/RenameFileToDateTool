@@ -1,7 +1,12 @@
 """Wrapper around tkinter's folder picker so every script doesn't reinvent the same
 4 lines of ``Tk(); withdraw(); askdirectory(); destroy()`` boilerplate.
+
+``resolve_directory`` is the entry point for scripts that take an optional
+``--path`` CLI flag: use the flag if given, fall back to the Tk picker otherwise.
+This is what makes the Takeout → ingest pipeline chainable from the command line.
 """
 
+import os
 from tkinter import Tk, filedialog
 
 
@@ -17,3 +22,22 @@ def choose_directory(title: str = "Select a folder", initial_dir: str | None = N
     finally:
         root.destroy()
     return selected or None
+
+
+def resolve_directory(cli_path: str | None, title: str,
+                      initial_dir: str | None = None,
+                      must_exist: bool = True) -> str | None:
+    """Return ``cli_path`` if it points to a real directory; otherwise open the picker.
+
+    Scripts pass their ``args.path`` here. If the user provided ``--path`` on the
+    command line, the picker is skipped entirely (so the script can run unattended).
+    A bad ``--path`` aborts loudly rather than silently falling back to the picker.
+
+    Set ``must_exist=False`` for output-folder args where the script will create
+    the directory if absent (e.g. ConvertUnwantedFileTypesToDifferentFormat's --output).
+    """
+    if cli_path:
+        if must_exist and not os.path.isdir(cli_path):
+            raise SystemExit(f"Not a directory: {cli_path}")
+        return cli_path
+    return choose_directory(title, initial_dir=initial_dir)

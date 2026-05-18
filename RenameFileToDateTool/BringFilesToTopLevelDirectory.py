@@ -9,11 +9,12 @@ want everything in one place before running ``main.py`` on it.
 Run with ``python BringFilesToTopLevelDirectory.py``.
 """
 
+import argparse
 import os
 import shutil
 from tkinter import messagebox
 
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import resolve_directory
 
 
 def compute_moves(root_dir):
@@ -63,7 +64,11 @@ def move_files_to_top_level(root_dir):
 
 
 def main():
-    folder_path = choose_directory("Select Folder to Flatten")
+    parser = argparse.ArgumentParser(description="Flatten a folder tree by moving every file to the root.")
+    parser.add_argument("--path", help="Folder to flatten. If omitted, opens the Tk folder picker.")
+    args = parser.parse_args()
+
+    folder_path = resolve_directory(args.path, "Select Folder to Flatten")
     if folder_path:
         move_files_to_top_level(folder_path)
     else:

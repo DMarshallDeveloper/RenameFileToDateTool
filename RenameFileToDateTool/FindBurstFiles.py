@@ -9,11 +9,12 @@ Read-only diagnostic.
 Run with ``python FindBurstFiles.py``.
 """
 
+import argparse
 import json
 import subprocess
 
 from photo_lib.binaries import EXIFTOOL
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import resolve_directory
 
 EXIFTOOL_PATH = EXIFTOOL  # back-compat alias
 BURST_TAG = "BurstUUID"
@@ -48,5 +49,9 @@ def scan_folder(directory):
 
 
 if __name__ == "__main__":
-    directory = choose_directory("Select Folder to Scan")
+    parser = argparse.ArgumentParser(description="List files with iOS BurstUUID metadata.")
+    parser.add_argument("--path", help="Folder to scan. If omitted, opens the Tk folder picker.")
+    args = parser.parse_args()
+
+    directory = resolve_directory(args.path, "Select Folder to Scan")
     scan_folder(directory)

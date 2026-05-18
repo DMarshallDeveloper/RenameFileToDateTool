@@ -17,13 +17,14 @@ The recursive walk skips folders we've already created (``_NN`` split folders an
 Run with ``python SplitMediaIntoFolders.py``.
 """
 
+import argparse
 import os
 import re
 import shutil
 import logging
 
 from photo_lib.extensions import is_media
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import resolve_directory
 
 SPLIT_FOLDER_RE = re.compile(r'_\d{2}$')
 
@@ -117,7 +118,11 @@ def process_folder_structure(root_folder):
 
 
 def main():
-    root_folder = choose_directory("Select the root folder to organize")
+    parser = argparse.ArgumentParser(description="Split each subfolder of the picked root into 100-file batches.")
+    parser.add_argument("--path", help="Root folder to organize. If omitted, opens the Tk folder picker.")
+    args = parser.parse_args()
+
+    root_folder = resolve_directory(args.path, "Select the root folder to organize")
     if not root_folder:
         logging.warning("No folder selected. Exiting program.")
         return

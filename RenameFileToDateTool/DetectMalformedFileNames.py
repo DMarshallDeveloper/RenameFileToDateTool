@@ -11,10 +11,11 @@ Read-only. Use the output as a worklist for ``main.py`` or
 Run with ``python DetectMalformedFileNames.py``.
 """
 
+import argparse
 import os
 
 from photo_lib.filename_pattern import CANONICAL_FILENAME_RE
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import resolve_directory
 
 
 def check_filenames(directory):
@@ -28,5 +29,9 @@ def check_filenames(directory):
 
 
 if __name__ == "__main__":
-    directory = choose_directory("Select Photos Directory")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--path", help="Directory to scan. If omitted, opens the Tk folder picker.")
+    args = parser.parse_args()
+
+    directory = resolve_directory(args.path, "Select Photos Directory")
     check_filenames(directory)

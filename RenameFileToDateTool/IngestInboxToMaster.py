@@ -137,19 +137,36 @@ def execute_moves(moves) -> int:
     return moved
 
 
-def main(dry_run: bool = False):
-    master_root = select_folder_dialog(
+def _resolve_path(cli_value, title, initial_dir):
+    """Pick a folder via CLI flag if given, otherwise via Tk picker.
+
+    Validates that ``cli_value`` exists; aborts loudly if not. Returns None if the
+    user cancelled the picker.
+    """
+    if cli_value:
+        if not os.path.isdir(cli_value):
+            print(f"Not a directory: {cli_value}")
+            return None
+        return cli_value
+    return select_folder_dialog(title, initialdir=initial_dir)
+
+
+def main(dry_run: bool = False, master_path: str | None = None,
+         inbox_path: str | None = None, assume_yes: bool = False):
+    master_root = _resolve_path(
+        master_path,
         "Select the master library folder",
-        initialdir=DEFAULT_MASTER_ROOT if os.path.isdir(DEFAULT_MASTER_ROOT) else None,
+        DEFAULT_MASTER_ROOT if os.path.isdir(DEFAULT_MASTER_ROOT) else None,
     )
     if not master_root:
         print("No master folder selected. Exiting.")
         return
 
     default_inbox = os.path.join(master_root, INBOX_FOLDER_NAME)
-    inbox_folder = select_folder_dialog(
+    inbox_folder = _resolve_path(
+        inbox_path,
         "Select the inbox folder (newly-renamed files)",
-        initialdir=default_inbox if os.path.isdir(default_inbox) else master_root,
+        default_inbox if os.path.isdir(default_inbox) else master_root,
     )
     if not inbox_folder:
         print("No inbox folder selected. Exiting.")
@@ -173,14 +190,17 @@ def main(dry_run: bool = False):
               "prompt and not touching disk.")
         return
 
-    if not confirm_google_photos_upload(inbox_folder):
-        print("Aborted before moving files. Inbox is untouched.")
-        return
+    if assume_yes:
+        print("--yes given: skipping Google Photos upload prompt and proceeding with moves.")
+    else:
+        if not confirm_google_photos_upload(inbox_folder):
+            print("Aborted before moving files. Inbox is untouched.")
+            return
 
-    response = input(f"Move {len(moves)} files into master year folders now? [y/N]: ").strip().lower()
-    if response != 'y':
-        print("Aborted before moving files. Inbox is untouched.")
-        return
+        response = input(f"Move {len(moves)} files into master year folders now? [y/N]: ").strip().lower()
+        if response != 'y':
+            print("Aborted before moving files. Inbox is untouched.")
+            return
 
     print(f"\nMoving {len(moves)} files...")
     moved = execute_moves(moves)
@@ -194,13 +214,32 @@ if __name__ == "__main__":
         description="Move newly-renamed files from the inbox into the master library's year folders."
     )
     parser.add_argument(
+        "--master",
+        help="Master library root. If omitted, opens the Tk folder picker."
+    )
+    parser.add_argument(
+        "--inbox",
+        help="Inbox folder containing the files to move. "
+             "If omitted, opens the Tk folder picker (defaulting to <master>/_Inbox)."
+    )
+    parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Auto-confirm the Google Photos upload prompt and the final move "
+             "confirmation. Use for scripted/unattended runs."
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the planned moves without touching disk or prompting for upload."
     )
     args = parser.parse_args()
 
     try:
-        main(dry_run=args.dry_run)
+        main(
+            dry_run=args.dry_run,
+            master_path=args.master,
+            inbox_path=args.inbox,
+            assume_yes=args.yes,
+        )
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(1)

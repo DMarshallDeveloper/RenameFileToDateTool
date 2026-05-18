@@ -10,11 +10,12 @@ Read-only.
 Run with ``python CountFileExtensionsInFolderWithExif.py``.
 """
 
+import argparse
 import collections
 import subprocess
 
 from photo_lib.binaries import EXIFTOOL
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import resolve_directory
 
 
 def get_file_extensions(folder):
@@ -32,8 +33,9 @@ def get_file_extensions(folder):
     return extensions
 
 
-def count_extensions():
-    folder = choose_directory("Select Folder")
+def count_extensions(folder=None):
+    if folder is None:
+        folder = resolve_directory(None, "Select Folder")
     if not folder:
         print("No folder selected. Exiting.")
         return
@@ -47,4 +49,8 @@ def count_extensions():
 
 
 if __name__ == "__main__":
-    count_extensions()
+    parser = argparse.ArgumentParser(description="Count file extensions (via exiftool) in a folder.")
+    parser.add_argument("--path", help="Folder to scan. If omitted, opens the Tk folder picker.")
+    args = parser.parse_args()
+
+    count_extensions(folder=resolve_directory(args.path, "Select Folder"))

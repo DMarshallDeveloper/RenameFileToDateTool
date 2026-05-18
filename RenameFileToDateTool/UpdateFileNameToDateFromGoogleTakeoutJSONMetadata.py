@@ -39,7 +39,7 @@ from photo_lib.takeout_geo import (
     local_datetime_from_metadata,
     resolve_timezone_from_geo,
 )
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import choose_directory, resolve_directory
 
 # The regex needs a pipe-separated string of extensions (case-insensitive matching).
 MEDIA_EXTENSIONS = "|".join(sorted(_MEDIA_EXT_SET))
@@ -308,16 +308,37 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
 
 
 if __name__ == "__main__":
-    print("Select the folder containing Google Photos files (including JSONs).")
-    source_folder_selected = select_folder_dialog("Select Source Folder")
-    print("Select the destination folder where renamed files will be saved.")
-    destination_folder_selected = select_folder_dialog("Select Destination Folder")
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Pair Google Takeout JSON sidecars to media files and copy them with canonical names."
+    )
+    parser.add_argument(
+        "--src",
+        help="Source folder containing Google Photos files (including JSONs). "
+             "If omitted, opens the Tk folder picker."
+    )
+    parser.add_argument(
+        "--dst",
+        help="Destination folder where renamed files will be saved. "
+             "If omitted, opens the Tk folder picker."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Match files and print the plan without copying anything."
+    )
+    args = parser.parse_args()
+
+    if not args.src:
+        print("Select the folder containing Google Photos files (including JSONs).")
+    source_folder_selected = resolve_directory(args.src, "Select Source Folder")
+
+    if not args.dst:
+        print("Select the destination folder where renamed files will be saved.")
+    destination_folder_selected = resolve_directory(args.dst, "Select Destination Folder", must_exist=False)
 
     if source_folder_selected and destination_folder_selected:
-        response = input("Run a dry-run first (no files will be copied)? [y/N]: ").strip().lower()
-        dry_run_mode = response == 'y'
-
-        process_and_copy_media_files(source_folder_selected, destination_folder_selected, dry_run=dry_run_mode)
+        process_and_copy_media_files(source_folder_selected, destination_folder_selected, dry_run=args.dry_run)
         print("File copying and renaming completed successfully!")
     else:
         print("Operation canceled.")

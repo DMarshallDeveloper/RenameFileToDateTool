@@ -6,9 +6,10 @@ Prints just filenames, no paths. Recurses through all subfolders.
 Run with ``python ListAllFilesInFolder.py``.
 """
 
+import argparse
 import os
 
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import resolve_directory
 
 
 def list_all_file_names(directory):
@@ -18,7 +19,11 @@ def list_all_file_names(directory):
 
 
 def main():
-    folder_path = choose_directory("Select a folder")
+    parser = argparse.ArgumentParser(description="Print every filename under a folder (recursive).")
+    parser.add_argument("--path", help="Folder to list. If omitted, opens the Tk folder picker.")
+    args = parser.parse_args()
+
+    folder_path = resolve_directory(args.path, "Select a folder")
     if folder_path:
         list_all_file_names(folder_path)
     else:

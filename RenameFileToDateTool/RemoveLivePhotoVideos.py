@@ -22,6 +22,7 @@ Run with ``python RemoveLivePhotoVideos.py``.
 """
 
 import os
+import argparse
 import shutil
 import subprocess
 import sys
@@ -30,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from photo_lib.binaries import FFPROBE
 from photo_lib.extensions import is_image, normalize_extension
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import choose_directory, resolve_directory
 
 FFPROBE_EXE = FFPROBE  # back-compat alias for tests that reference it
 QUARANTINE_FOLDER_NAME = "_LivePhotoMOVs"
@@ -141,20 +142,23 @@ def quarantine_videos(folder: str, video_filenames: list[str]) -> int:
     return moved
 
 
-def main():
-    folder = select_folder_dialog("Select folder containing Takeout media")
+def main(path: str | None = None,
+         max_duration: float | None = None,
+         assume_yes: bool = False):
+    folder = resolve_directory(path, "Select folder containing Takeout media")
     if not folder:
         print("No folder selected. Exiting.")
         return
 
-    response = input(
-        f"Max Live Photo duration in seconds (Enter for default {DEFAULT_MAX_LIVE_PHOTO_DURATION_SECONDS}): "
-    ).strip()
-    try:
-        max_duration = float(response) if response else DEFAULT_MAX_LIVE_PHOTO_DURATION_SECONDS
-    except ValueError:
-        print("Invalid number — using default.")
-        max_duration = DEFAULT_MAX_LIVE_PHOTO_DURATION_SECONDS
+    if max_duration is None:
+        response = input(
+            f"Max Live Photo duration in seconds (Enter for default {DEFAULT_MAX_LIVE_PHOTO_DURATION_SECONDS}): "
+        ).strip()
+        try:
+            max_duration = float(response) if response else DEFAULT_MAX_LIVE_PHOTO_DURATION_SECONDS
+        except ValueError:
+            print("Invalid number — using default.")
+            max_duration = DEFAULT_MAX_LIVE_PHOTO_DURATION_SECONDS
 
     matched_videos = find_live_photo_video_candidates(folder, max_duration)
     if not matched_videos:
@@ -169,10 +173,13 @@ def main():
         print(f"  ... and {len(matched_videos) - 20} more")
     print()
 
-    response = input(f"Move these into '{QUARANTINE_FOLDER_NAME}/' for review? [y/N]: ").strip().lower()
-    if response != 'y':
-        print("Aborted. No files moved.")
-        return
+    if assume_yes:
+        print(f"--yes given: moving into '{QUARANTINE_FOLDER_NAME}/'.")
+    else:
+        response = input(f"Move these into '{QUARANTINE_FOLDER_NAME}/' for review? [y/N]: ").strip().lower()
+        if response != 'y':
+            print("Aborted. No files moved.")
+            return
 
     moved = quarantine_videos(folder, matched_videos)
     print(f"\nDone. {moved} file(s) moved into '{QUARANTINE_FOLDER_NAME}/'.")
@@ -180,8 +187,24 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Find iOS Live Photo split videos and quarantine them for review."
+    )
+    parser.add_argument("--path", help="Folder to scan. If omitted, opens the Tk folder picker.")
+    parser.add_argument(
+        "--max-duration", type=float,
+        help=f"Max duration in seconds for a clip to count as a Live Photo split "
+             f"(default {DEFAULT_MAX_LIVE_PHOTO_DURATION_SECONDS}). "
+             "If omitted, prompts interactively."
+    )
+    parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip the quarantine confirmation prompt."
+    )
+    args = parser.parse_args()
+
     try:
-        main()
+        main(path=args.path, max_duration=args.max_duration, assume_yes=args.yes)
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(1)

@@ -15,13 +15,14 @@ The output is ready to feed into
 Run with ``python ExtractAndBringAllFilesToTopLevelDirectory.py``.
 """
 
+import argparse
 from pathlib import Path
 import shutil
 import zipfile
 from tkinter import messagebox
 from concurrent.futures import ThreadPoolExecutor
 
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import resolve_directory
 
 
 def unique_path(dest: Path, planned: set) -> Path:
@@ -94,7 +95,11 @@ def flatten_takeout(root: Path) -> None:
 
 
 def main() -> None:
-    picked = choose_directory("Select Google-Takeout parent folder")
+    parser = argparse.ArgumentParser(description="Unzip Google Takeout archives and flatten the result.")
+    parser.add_argument("--path", help="Takeout parent folder. If omitted, opens the Tk folder picker.")
+    args = parser.parse_args()
+
+    picked = resolve_directory(args.path, "Select Google-Takeout parent folder")
     if not picked:
         messagebox.showwarning("Cancelled", "No folder was selected.")
         return

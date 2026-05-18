@@ -28,7 +28,7 @@ from photo_lib.filename_pattern import (
 )
 from photo_lib.tag_modes import IMAGE_TAG_MODES, VIDEO_TAG_MODES
 from photo_lib.timezone_detection import LOCAL_TIMEZONE, detect_file_tz
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import choose_directory, resolve_directory
 
 
 # Back-compat alias: extract_date_from_filename used to live here; tests still import it.
@@ -121,10 +121,14 @@ if __name__ == "__main__":
         description="Recursively rewrite EXIF/QuickTime dates from filenames."
     )
     parser.add_argument(
+        "--path",
+        help="Directory to operate on (recursively). If omitted, opens the Tk folder picker."
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the planned EXIF writes without invoking exiftool."
     )
     args = parser.parse_args()
 
-    directory = choose_directory("Select Photos Directory")
+    directory = resolve_directory(args.path, "Select Photos Directory")
     change_exif_date(directory, dry_run=args.dry_run)

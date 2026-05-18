@@ -12,12 +12,13 @@ you pick a separate output folder, and the conversion failures get logged to
 Run with ``python ConvertUnwantedFileTypesToDifferentFormat.py``.
 """
 
+import argparse
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 from photo_lib.binaries import FFMPEG
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import resolve_directory
 
 FFMPEG_EXE = FFMPEG  # back-compat alias
 
@@ -101,12 +102,17 @@ def convert_files(input_folder, output_folder):
 
 
 def main():
-    input_folder = choose_directory("Select Folder Containing Files")
+    parser = argparse.ArgumentParser(description="Transcode legacy formats (avi/3gp/gif/png/aee) to mp4/jpg.")
+    parser.add_argument("--input", help="Folder containing files to convert. If omitted, opens the Tk folder picker.")
+    parser.add_argument("--output", help="Destination folder for converted files. If omitted, opens the Tk folder picker.")
+    args = parser.parse_args()
+
+    input_folder = resolve_directory(args.input, "Select Folder Containing Files")
     if not input_folder:
         print("No folder selected. Exiting.")
         return
 
-    output_folder = choose_directory("Select Output Folder")
+    output_folder = resolve_directory(args.output, "Select Output Folder", must_exist=False)
     if not output_folder:
         print("No output folder selected. Exiting.")
         return

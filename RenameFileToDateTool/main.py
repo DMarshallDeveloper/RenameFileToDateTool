@@ -58,7 +58,7 @@ from photo_lib.timezone_detection import (
     parse_exif_datetime,
     parse_tz_offset,
 )
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import choose_directory, resolve_directory
 
 # Back-compat aliases — older tests and external callers reach for these names.
 EXE = EXIFTOOL
@@ -267,14 +267,28 @@ if __name__ == "__main__":
         description="Rename files from EXIF dates (mode 0) or write EXIF from filenames (mode 1)."
     )
     parser.add_argument(
+        "--path",
+        help="Directory to operate on. If omitted, opens the Tk folder picker."
+    )
+    parser.add_argument(
+        "--mode", choices=["0", "1"],
+        help="0 = rename from EXIF, 1 = write EXIF from filename. "
+             "If omitted, prompts interactively."
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the planned renames or EXIF writes without modifying anything."
     )
     args = parser.parse_args()
 
-    directory = choose_directory("Select Photos Directory")
-    editing_exif_not_name = input("Are you renaming files from date metadata (0) "
-                                  "or writing metadata from filename (1): ")
+    directory = resolve_directory(args.path, "Select Photos Directory")
+    if args.mode is not None:
+        editing_exif_not_name = args.mode
+    else:
+        editing_exif_not_name = input(
+            "Are you renaming files from date metadata (0) "
+            "or writing metadata from filename (1): "
+        )
 
     if editing_exif_not_name == '0':
         rename_photos(directory, dry_run=args.dry_run)

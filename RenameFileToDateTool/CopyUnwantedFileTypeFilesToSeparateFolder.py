@@ -10,10 +10,11 @@ Originals are untouched.
 Run with ``python CopyUnwantedFileTypeFilesToSeparateFolder.py``.
 """
 
+import argparse
 import os
 import shutil
 
-from photo_lib.tk_picker import choose_directory
+from photo_lib.tk_picker import resolve_directory
 
 # Narrowly scoped: legacy formats user wants collected for conversion. Don't reuse
 # the canonical extension sets — this is intentionally a different list.
@@ -45,7 +46,11 @@ def copy_files_to_root(folder):
     print("All matching files have been copied!")
 
 if __name__ == "__main__":
-    folder = choose_directory("Select the Root Folder to Search")
+    parser = argparse.ArgumentParser(description="Copy legacy-format files into a Collected_Files/ subfolder.")
+    parser.add_argument("--path", help="Root folder to search. If omitted, opens the Tk folder picker.")
+    args = parser.parse_args()
+
+    folder = resolve_directory(args.path, "Select the Root Folder to Search")
     if folder:
         copy_files_to_root(folder)
     else:

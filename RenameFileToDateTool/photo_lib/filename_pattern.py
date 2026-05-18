@@ -34,9 +34,19 @@ CANONICAL_FILENAME_RE = re.compile(
     r'^\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}_\d+\.[a-zA-Z0-9]{3,4}$'
 )
 
-# Placeholder filenames: YYYY-01-01 00.00.00 means "we don't know the time of year".
-# the writer bumps these to 13:00 NZ so they don't roll back to Dec 31 in UTC viewers.
-PLACEHOLDER_FILENAME_RE = re.compile(r'^\d{4}-01-01 00\.00\.00')
+# Placeholder filenames: YYYY-01-01 followed by one of the historical placeholder
+# times. Two conventions accumulated:
+#   - ``00.00.00`` — midnight Jan 1
+#   - ``01.01.00`` — 01:01:00 (used in an earlier batch of imports as a "this is a
+#                    placeholder, not a real capture time" marker)
+# In both cases the writer bumps EXIF to 13:00 NZ so the date doesn't roll back to
+# Dec 31 in UTC viewers (13:00 NZDT = 00:00 UTC exactly).
+PLACEHOLDER_TIME_PATTERNS = ('00.00.00', '01.01.00')
+PLACEHOLDER_FILENAME_RE = re.compile(
+    r'^\d{4}-01-01 (?:' + '|'.join(re.escape(t) for t in PLACEHOLDER_TIME_PATTERNS) + r')'
+)
+# What both placeholder conventions get bumped/renamed TO.
+PLACEHOLDER_BUMPED_TIME = '13.00.00'
 
 
 def parse_filename_datetime(filename: str) -> datetime | None:
@@ -94,10 +104,11 @@ def maybe_rename_placeholder(file_path: str, dry_run: bool = False) -> str | Non
     """Rename a placeholder file's basename so its filename matches the EXIF
     that ``apply_placeholder_time_bump`` produces.
 
-    Files named ``YYYY-01-01 00.00.00_N.ext`` would otherwise end up with EXIF
-    ``13:00:00`` (after the bump) but filename ``00.00.00`` — a confusing
-    asymmetry. This helper renames them in-place to ``YYYY-01-01 13.00.00_N.ext``
-    so the filename ≡ EXIF invariant always holds.
+    Files named with any of the placeholder time conventions (see
+    ``PLACEHOLDER_TIME_PATTERNS``) would otherwise end up with EXIF ``13:00:00``
+    (after the bump) but their original filename time — a confusing asymmetry.
+    This helper renames them in-place to ``YYYY-01-01 13.00.00_N.ext`` so the
+    filename ≡ EXIF invariant always holds.
 
     Returns the (possibly-new) path on success, or ``None`` if a rename was
     needed but the target name already exists (caller should skip such files
@@ -110,9 +121,14 @@ def maybe_rename_placeholder(file_path: str, dry_run: bool = False) -> str | Non
     if not PLACEHOLDER_FILENAME_RE.match(filename):
         return file_path
 
-    new_filename = filename.replace(' 00.00.00', ' 13.00.00', 1)
+    new_filename = filename
+    for placeholder_time in PLACEHOLDER_TIME_PATTERNS:
+        marker = ' ' + placeholder_time
+        if marker in new_filename:
+            new_filename = new_filename.replace(marker, ' ' + PLACEHOLDER_BUMPED_TIME, 1)
+            break
     if new_filename == filename:
-        return file_path  # defensive: regex matched but substitution didn't change anything
+        return file_path  # defensive: regex matched but no recognised time pattern in the name
     new_path = os.path.join(os.path.dirname(file_path), new_filename)
 
     if os.path.exists(new_path) and os.path.abspath(new_path) != os.path.abspath(file_path):

@@ -61,6 +61,12 @@ class TestPlaceholderBump(unittest.TestCase):
             '2000-01-01 00.00.00_1.jpg', datetime(2000, 1, 1, 0, 0, 0))
         self.assertEqual(bumped, datetime(2000, 1, 1, 13, 0, 0))
 
+    def test_jan_1_one_oh_one_bumped_to_1pm(self):
+        # 01.01.00 is the second historical placeholder convention — also bumps.
+        bumped = filename_pattern.apply_placeholder_time_bump(
+            '2000-01-01 01.01.00_1.jpg', datetime(2000, 1, 1, 1, 1, 0))
+        self.assertEqual(bumped, datetime(2000, 1, 1, 13, 0, 0))
+
     def test_other_dates_not_touched(self):
         unchanged = filename_pattern.apply_placeholder_time_bump(
             '2026-04-09 19.52.51_1.jpg', datetime(2026, 4, 9, 19, 52, 51))
@@ -99,6 +105,15 @@ class TestMaybeRenamePlaceholder(unittest.TestCase):
         old = self._make('2011-01-01 00.00.00_5.jpg')
         new = filename_pattern.maybe_rename_placeholder(old)
         self.assertEqual(os.path.basename(new), '2011-01-01 13.00.00_5.jpg')
+        self.assertTrue(os.path.exists(new))
+        self.assertFalse(os.path.exists(old))
+
+    def test_one_oh_one_placeholder_also_renamed_to_13(self):
+        # The second placeholder convention (01.01.00) also gets renamed to 13.00.00.
+        import os
+        old = self._make('2000-01-01 01.01.00_5.jpg')
+        new = filename_pattern.maybe_rename_placeholder(old)
+        self.assertEqual(os.path.basename(new), '2000-01-01 13.00.00_5.jpg')
         self.assertTrue(os.path.exists(new))
         self.assertFalse(os.path.exists(old))
 

@@ -1,30 +1,32 @@
+"""DetectMalformedFileNames.py — print any filenames that drifted off-spec.
+
+The master library convention is ``YYYY-MM-DD HH.MM.SS_N.ext`` (3- or 4-char
+extension). This script walks the picked folder and prints the full path of any
+file that doesn't match that exact shape — usually a file you forgot to rename
+or one that came from a script that used an older naming format.
+
+Read-only. Use the output as a worklist for ``main.py`` or
+``ChangeDatesFromFileName.py``.
+
+Run with ``python DetectMalformedFileNames.py``.
+"""
+
 import os
-import re
-from tkinter import filedialog, Tk
 
-
-def choose_directory():
-    root = Tk()
-    root.withdraw()  # Hide the main window
-
-    # Ask the user to select a directory
-    directory = filedialog.askdirectory(title="Select Photos Directory")
-    return directory
+from photo_lib.filename_pattern import CANONICAL_FILENAME_RE
+from photo_lib.tk_picker import choose_directory
 
 
 def check_filenames(directory):
-    # Define the regex pattern to match
-    pattern = r'^\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}_\d+\.[a-zA-Z0-9]{3,4}$'
-    # Traverse the folder and subfolders
+    """Walk the directory and print every file whose name doesn't match the master
+    library's ``YYYY-MM-DD HH.MM.SS_N.ext`` convention."""
     for dirpath, _, filenames in os.walk(directory):
         for filename in filenames:
-            # Check if the filename matches the regex pattern
-            if not re.match(pattern, filename):
-                # Print the full path of the file if it does not match
+            if not CANONICAL_FILENAME_RE.match(filename):
                 full_path = os.path.join(dirpath, filename)
                 print(f"Filename does not match pattern: {full_path}")
 
-# This program finds any filenames not in the datetime format YYYY-MM-dd HH.mm.ss_{number}.{extension}
+
 if __name__ == "__main__":
-    directory = choose_directory()
+    directory = choose_directory("Select Photos Directory")
     check_filenames(directory)

@@ -1,6 +1,16 @@
+"""FindFolderDifferences.py — print which files are in folder A but not B (and vice versa).
+
+Quick sanity-check tool: pick two folders, get a list of files unique to each.
+Compares filenames only (not contents) and only one level deep — doesn't recurse.
+
+Useful for "did all my files copy across?" checks.
+
+Run with ``python FindFolderDifferences.py``.
+"""
+
 import os
-import tkinter as tk
-from tkinter import filedialog
+
+from photo_lib.tk_picker import choose_directory
 
 
 def get_files(folder):
@@ -32,11 +42,8 @@ def compare_folders(folder1, folder2):
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    root.withdraw()
-
-    folder1 = filedialog.askdirectory(title="Select the first folder")
-    folder2 = filedialog.askdirectory(title="Select the second folder")
+    folder1 = choose_directory("Select the first folder")
+    folder2 = choose_directory("Select the second folder")
 
     if folder1 and folder2 and os.path.isdir(folder1) and os.path.isdir(folder2):
         compare_folders(folder1, folder2)

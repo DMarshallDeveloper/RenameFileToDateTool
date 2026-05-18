@@ -1,47 +1,51 @@
-"""Ingest newly-renamed files from an inbox folder into the master photo library.
+"""IngestInboxToMaster.py — move newly-named files into the master library.
 
-Workflow:
-  1. Pick an inbox folder (defaults to <master>/_Inbox).
-  2. Pick the master folder (D:\\Files\\Pictures and Videos).
-  3. Validate filenames look like the rename script's output (YYYY-MM-DD HH.MM.SS...).
-  4. Group files by year and print a plan.
-  5. Pause so you can upload the inbox to Google Photos via the browser
-     (or confirm you already did). This keeps cloud + master in sync.
-  6. Move files into the right year folder (years 2000-2010 share one folder).
+The master photo library at ``D:\\Files\\Pictures and Videos\\`` is organised by
+year folders (``2024/``, ``2025/``, …, plus a bundled ``2000 - 2010/`` for older
+photos). New batches of photos — thumb drives, Takeout dumps, shared albums —
+land first in ``D:\\Files\\Pictures and Videos\\_Inbox\\`` so it's always clear
+what's "new and unmerged" vs what's already in the library.
+
+This script handles step 2 of the ingest workflow:
+  1. (You do this elsewhere) Run ``main.py`` or
+     ``UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py`` to give every file
+     in ``_Inbox/`` its canonical ``YYYY-MM-DD HH.MM.SS_N.ext`` name.
+  2. Run this script:
+     a. Pick the master folder (defaults to ``D:\\Files\\Pictures and Videos``).
+     b. Pick the inbox folder (defaults to ``<master>/_Inbox``).
+     c. The script groups files by year and prints what it'll move where.
+     d. It pauses and asks you to upload ``_Inbox/`` to Google Photos in the
+        browser. This keeps the cloud copy in sync. You can skip this if you've
+        already uploaded.
+     e. After you confirm, it moves the files into the right year folders.
+
+Run with ``python IngestInboxToMaster.py``.
 """
 
 import os
-import re
 import shutil
 import sys
-import tkinter as tk
 from collections import defaultdict
-from tkinter import filedialog, messagebox
 
-DEFAULT_MASTER_ROOT = r"D:\Files\Pictures and Videos"
-INBOX_FOLDER_NAME = "_Inbox"
-BUNDLED_EARLY_FOLDER = "2000 - 2010"
-BUNDLED_EARLY_YEARS = set(range(2000, 2011))
+from photo_lib.config import (
+    BUNDLED_EARLY_FOLDER,
+    BUNDLED_EARLY_YEAR_RANGE,
+    INBOX_FOLDER_NAME,
+    MASTER_ROOT,
+)
+from photo_lib.filename_pattern import parse_filename_year
+from photo_lib.tk_picker import choose_directory
 
-FILENAME_YEAR_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+DEFAULT_MASTER_ROOT = MASTER_ROOT
+BUNDLED_EARLY_YEARS = set(range(*BUNDLED_EARLY_YEAR_RANGE))
 
 
 def select_folder_dialog(title: str, initialdir: str | None = None) -> str | None:
-    root = tk.Tk()
-    root.withdraw()
-    selected = filedialog.askdirectory(title=title, initialdir=initialdir or "")
-    root.destroy()
-    return selected or None
+    return choose_directory(title, initial_dir=initialdir)
 
 
 def parse_year_from_filename(filename: str) -> int | None:
-    match = FILENAME_YEAR_RE.match(filename)
-    if not match:
-        return None
-    year = int(match.group(1))
-    if year < 1900 or year > 2100:
-        return None
-    return year
+    return parse_filename_year(filename)
 
 
 def target_folder_for_year(master_root: str, year: int) -> str:

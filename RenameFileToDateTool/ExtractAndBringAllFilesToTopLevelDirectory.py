@@ -1,10 +1,27 @@
-# flatten_takeout.py
+"""ExtractAndBringAllFilesToTopLevelDirectory.py — Takeout-zip flattener.
+
+Google Takeout downloads come as a stack of large .zip files, each containing
+``Takeout/Google Photos/<album>/<year>/<file>`` nested structure. This script:
+
+  1. Extracts every .zip at the top level of the picked folder.
+  2. Walks the resulting tree and moves every file up to a single
+     ``Extracted data/`` folder.
+  3. Resolves name collisions with ``_1``, ``_2`` suffixes.
+  4. Deletes the now-empty intermediate folders.
+
+The output is ready to feed into
+``UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py``.
+
+Run with ``python ExtractAndBringAllFilesToTopLevelDirectory.py``.
+"""
+
 from pathlib import Path
 import shutil
 import zipfile
-import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import messagebox
 from concurrent.futures import ThreadPoolExecutor
+
+from photo_lib.tk_picker import choose_directory
 
 
 def unique_path(dest: Path, planned: set) -> Path:
@@ -77,8 +94,7 @@ def flatten_takeout(root: Path) -> None:
 
 
 def main() -> None:
-    tk.Tk().withdraw()
-    picked = filedialog.askdirectory(title="Select Google-Takeout parent folder")
+    picked = choose_directory("Select Google-Takeout parent folder")
     if not picked:
         messagebox.showwarning("Cancelled", "No folder was selected.")
         return

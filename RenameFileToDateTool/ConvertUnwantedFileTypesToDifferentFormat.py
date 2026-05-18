@@ -1,12 +1,31 @@
+"""ConvertUnwantedFileTypesToDifferentFormat.py — re-encode legacy formats to mp4/jpg.
+
+Some old formats (``.avi``, ``.3gp``, ``.gif`` videos, the iOS Live Photo ``.aee``
+sidecar, ``.png`` images) don't play nicely with Google Photos or iOS. This script
+transcodes them to playable equivalents (``.mp4`` and ``.jpg``) so the master
+library is consistent.
+
+Uses ffmpeg for video and Pillow for image conversion. Originals are NOT deleted —
+you pick a separate output folder, and the conversion failures get logged to
+``conversion_errors.log`` next to wherever you ran the script from.
+
+Run with ``python ConvertUnwantedFileTypesToDifferentFormat.py``.
+"""
+
 import os
 import subprocess
-import tkinter as tk
-from tkinter import filedialog
 from concurrent.futures import ThreadPoolExecutor
 
-# Treat .aee as video
+from photo_lib.binaries import FFMPEG
+from photo_lib.tk_picker import choose_directory
+
+FFMPEG_EXE = FFMPEG  # back-compat alias
+
+# This converter is narrowly scoped: it transcodes formats that don't play nicely
+# elsewhere (avi/3gp/gif → mp4) and treats .aee (iOS Live Photo sidecar) as a video.
+# Don't reuse the canonical extension sets — this script needs its own narrow list.
 VIDEO_EXTENSIONS = ('.avi', '.3gp', '.gif', '.aee')
-IMAGE_EXTENSIONS = ('.png',)  # only keep real images
+IMAGE_EXTENSIONS = ('.png',)
 
 
 def convert_video_to_mp4(input_file, output_folder):
@@ -16,7 +35,7 @@ def convert_video_to_mp4(input_file, output_folder):
     )
 
     cmd = [
-        'ffmpeg', '-y', '-i', input_file,
+        FFMPEG_EXE, '-y', '-i', input_file,
         '-c:v', 'libx264',
         '-pix_fmt', 'yuv420p',
         '-c:a', 'aac',
@@ -26,7 +45,8 @@ def convert_video_to_mp4(input_file, output_folder):
         output_file
     ]
 
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            encoding='utf-8', errors='replace')
     if result.returncode == 0:
         print(f"Converted video {input_file} -> {output_file}")
     else:
@@ -81,14 +101,12 @@ def convert_files(input_folder, output_folder):
 
 
 def main():
-    root = tk.Tk()
-    root.withdraw()
-    input_folder = filedialog.askdirectory(title="Select Folder Containing Files")
+    input_folder = choose_directory("Select Folder Containing Files")
     if not input_folder:
         print("No folder selected. Exiting.")
         return
 
-    output_folder = filedialog.askdirectory(title="Select Output Folder")
+    output_folder = choose_directory("Select Output Folder")
     if not output_folder:
         print("No output folder selected. Exiting.")
         return

@@ -1,20 +1,31 @@
-import subprocess
-import os
+"""CountFileExtensionsInFolderWithExif.py — like CountFileExtensionsInFolder,
+but uses exiftool to ask "what format is this *really*?" instead of just trusting
+the filename extension.
+
+Different from the sibling script because a file named ``photo.jpg`` might
+actually be HEIC bytes (common after iOS exports), and exiftool will tell you so.
+
+Read-only.
+
+Run with ``python CountFileExtensionsInFolderWithExif.py``.
+"""
+
 import collections
-import tkinter as tk
-from tkinter import filedialog
+import subprocess
+
+from photo_lib.binaries import EXIFTOOL
+from photo_lib.tk_picker import choose_directory
 
 
 def get_file_extensions(folder):
-    # Run exiftool to get file types
-    cmd = ['exiftool', '-ext', '*', '-FileTypeExtension', '-r', folder]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    cmd = [EXIFTOOL, '-ext', '*', '-FileTypeExtension', '-r', folder]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            encoding='utf-8', errors='replace')
 
-    # Process the output
     extensions = []
     for line in result.stdout.split("\n"):
         if line.startswith("File Type Extension"):
-            ext = line.split(":")[-1].strip()  # Remove .lower() to keep case sensitivity
+            ext = line.split(":")[-1].strip()
             if ext:
                 extensions.append(ext)
 
@@ -22,11 +33,7 @@ def get_file_extensions(folder):
 
 
 def count_extensions():
-    # Open file dialog to select folder
-    root = tk.Tk()
-    root.withdraw()  # Hide main Tkinter window
-    folder = filedialog.askdirectory(title="Select Folder")
-
+    folder = choose_directory("Select Folder")
     if not folder:
         print("No folder selected. Exiting.")
         return
@@ -34,7 +41,6 @@ def count_extensions():
     extensions = get_file_extensions(folder)
     counter = collections.Counter(extensions)
 
-    # Print results sorted by most common
     print(f"\nMost Common File Extensions in: {folder}")
     for ext, count in counter.most_common():
         print(f"{ext}: {count}")

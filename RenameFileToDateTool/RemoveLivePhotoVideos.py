@@ -1,37 +1,53 @@
-"""Find and quarantine the 1-3 second MOV/MP4 files that Google Takeout produces
-when it splits an iOS Live Photo into a still + a short clip.
+"""RemoveLivePhotoVideos.py — quarantine the 1-3 second video clips that come
+from iOS Live Photos.
 
-Heuristic: a video is treated as a Live Photo split when
-  - its name stem matches a still image in the same folder (case-insensitive), and
-  - its duration is under the threshold (default 5 seconds)
+iOS Live Photos are a still image plus a tiny accompanying video. When you download
+them from Google Takeout, they arrive as two separate files with the same name stem
+(e.g. ``IMG_3118.HEIC`` + ``IMG_3118.MP4``). Most of the time those mini-videos
+are noise — auto-captured motion before/after the real shot — and you don't want
+them in your library.
 
-Matched videos are moved into a `_LivePhotoMOVs` subfolder rather than deleted,
-so you can review before removing them permanently.
+This script finds those mini-videos by looking for:
+  - a video whose filename stem matches a still image in the same folder, AND
+  - whose duration (read via ``ffprobe``) is under the threshold (default 5 s).
+
+It MOVES matched videos into a ``_LivePhotoMOVs/`` subfolder rather than deleting
+them, so you can review before binning anything permanently.
+
+WARNING: per the user's photo-library workflow, this is an OPTIONAL tool. The
+default ingest workflow keeps the Live Photo videos alongside the stills. Only
+use this when you've decided a particular batch of clips is genuinely junk.
+
+Run with ``python RemoveLivePhotoVideos.py``.
 """
 
 import os
 import shutil
 import subprocess
 import sys
-import tkinter as tk
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from tkinter import filedialog
 
-FFPROBE_EXE = "ffprobe.exe"
+from photo_lib.binaries import FFPROBE
+from photo_lib.extensions import is_image, normalize_extension
+from photo_lib.tk_picker import choose_directory
+
+FFPROBE_EXE = FFPROBE  # back-compat alias for tests that reference it
 QUARANTINE_FOLDER_NAME = "_LivePhotoMOVs"
 DEFAULT_MAX_LIVE_PHOTO_DURATION_SECONDS = 5.0
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".tiff", ".gif"}
-VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v"}
+# Live Photo pairs are always still + short clip. Audio-only and unusual containers
+# like .mkv don't come out of iOS Live Photos, so we restrict to the three formats
+# Apple/Takeout actually produce (mov/mp4/m4v).
+_LIVE_PHOTO_VIDEO_EXTENSIONS = {"mov", "mp4", "m4v"}
+
+
+def _is_live_photo_video(ext: str) -> bool:
+    return normalize_extension(ext) in _LIVE_PHOTO_VIDEO_EXTENSIONS
 
 
 def select_folder_dialog(title: str) -> str | None:
-    root = tk.Tk()
-    root.withdraw()
-    selected = filedialog.askdirectory(title=title)
-    root.destroy()
-    return selected or None
+    return choose_directory(title)
 
 
 def get_video_duration_seconds(video_path: str) -> float | None:
@@ -45,7 +61,7 @@ def get_video_duration_seconds(video_path: str) -> float | None:
                 video_path,
             ],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            universal_newlines=True, timeout=30,
+            encoding='utf-8', errors='replace', timeout=30,
         )
         duration_string = result.stdout.strip()
         if not duration_string:
@@ -56,18 +72,21 @@ def get_video_duration_seconds(video_path: str) -> float | None:
 
 
 def group_files_by_stem(folder: str):
-    """Return {lowercase_stem: {"images": [filename, ...], "videos": [filename, ...]}}."""
+    """Return ``{lowercase_stem: {"images": [filename, ...], "videos": [filename, ...]}}``.
+
+    Videos are restricted to mov/mp4/m4v (iOS Live Photo formats) — other video types
+    aren't produced by Apple/Takeout Live Photo splits and shouldn't be quarantined.
+    """
     groups = defaultdict(lambda: {"images": [], "videos": []})
     for filename in os.listdir(folder):
         full_path = os.path.join(folder, filename)
         if not os.path.isfile(full_path):
             continue
         stem, ext = os.path.splitext(filename)
-        ext_lower = ext.lower()
         stem_lower = stem.lower()
-        if ext_lower in IMAGE_EXTENSIONS:
+        if is_image(ext):
             groups[stem_lower]["images"].append(filename)
-        elif ext_lower in VIDEO_EXTENSIONS:
+        elif _is_live_photo_video(ext):
             groups[stem_lower]["videos"].append(filename)
     return groups
 

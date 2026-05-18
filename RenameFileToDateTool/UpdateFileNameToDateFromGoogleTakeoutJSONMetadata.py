@@ -1,21 +1,57 @@
+"""UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py — Takeout dump ingester.
+
+Google Takeout downloads photos as a folder full of media files (jpg, mov, heic, …)
+each accompanied by a ``.json`` sidecar that holds the *real* date the photo was
+taken (Google strips and re-encodes EXIF on upload, so the date in the JSON is
+often the only reliable source). This script:
+
+  1. Walks the source folder and matches each ``.json`` to its media file. The
+     matching is fuzzy because Takeout's filename conventions are inconsistent —
+     suffixes like ``(1)`` get moved, long stems get truncated, the JSON tail can
+     be ``.json`` OR ``.supplemental-metadata.json``.
+  2. Reads ``photoTakenTime.timestamp`` (UNIX seconds, always UTC) from each JSON.
+  3. Converts the UTC instant to *local time at the photo's GPS coordinates* using
+     timezonefinder — so an overseas photo lands with its on-camera local time,
+     not a NZ-shifted version. Falls back to NZ when no GPS is present.
+  4. Copies the media file to the destination with a clean
+     ``YYYY-MM-DD HH.MM.SS_N.ext`` name. Originals stay in the source folder.
+  5. Second pass: any orphan media files (Live Photo videos without their own JSON)
+     inherit the timestamp of their companion still image.
+
+Run with ``python UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py``.
+You'll be prompted to pick a source folder, a destination folder, and whether
+to dry-run first.
+
+After this finishes, the destination folder is ready to drop into the master
+library's ``_Inbox`` for ingestion via ``IngestInboxToMaster.py``.
+"""
+
 import bisect
 import json
 import os
 import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from tkinter import Tk, filedialog
-from zoneinfo import ZoneInfo
 
-NEW_ZEALAND_TIMEZONE = ZoneInfo("Pacific/Auckland")
-
-MEDIA_EXTENSIONS = (
-    "jpg|jpeg|png|gif|heic|heif|mov|mp4|m4v|avi|mpg|mpeg"
+from photo_lib.extensions import MEDIA_EXTENSIONS as _MEDIA_EXT_SET
+from photo_lib.takeout_geo import (
+    DEFAULT_TIMEZONE as NEW_ZEALAND_TIMEZONE,  # back-compat alias for tests
+    local_datetime_from_metadata,
+    resolve_timezone_from_geo,
 )
+from photo_lib.tk_picker import choose_directory
+
+# The regex needs a pipe-separated string of extensions (case-insensitive matching).
+MEDIA_EXTENSIONS = "|".join(sorted(_MEDIA_EXT_SET))
 
 DUPLICATE_SUFFIX_RE = re.compile(r"(?:\((\d+)\)|_(\d+))$", re.IGNORECASE)
 REAL_EXTENSION_RE = re.compile(rf"^(.*?\.({MEDIA_EXTENSIONS}))", re.IGNORECASE)
+
+
+# Back-compat wrapper retained because callers used to pass a separate ``title``
+# argument; the new tk_picker takes the title positionally.
+def select_folder_dialog(title: str) -> str | None:
+    return choose_directory(title)
 
 
 def select_folder_dialog(title: str) -> str | None:
@@ -173,8 +209,7 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
             )
 
             if matched_media_filename:
-                timestamp_seconds = int(metadata["photoTakenTime"]["timestamp"])
-                local_datetime = datetime.fromtimestamp(timestamp_seconds, tz=NEW_ZEALAND_TIMEZONE)
+                local_datetime = local_datetime_from_metadata(metadata)
                 timestamped_base_name = local_datetime.strftime("%Y-%m-%d %H.%M.%S")
                 extension = os.path.splitext(matched_media_filename)[1].lower()
 

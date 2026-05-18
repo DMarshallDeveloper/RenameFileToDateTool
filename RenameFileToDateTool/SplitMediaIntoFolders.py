@@ -1,24 +1,43 @@
+"""SplitMediaIntoFolders.py — break a big folder into 100-file batches.
+
+iOS' Photos app won't reliably accept large bulk uploads from Google Drive. The
+user's workaround is to slice a year folder into batches of 100, drop each batch
+into Drive, and download them to the phone one at a time.
+
+For each immediate subfolder of the picked root:
+  - Non-media files get pushed into a ``non_media/`` sibling so they don't muddle
+    the batch counts.
+  - Media files get distributed across new subfolders named
+    ``<parent>_01``, ``<parent>_02``, … each holding up to 100 files.
+
+The recursive walk skips folders we've already created (``_NN`` split folders and
+``non_media``) so a second run doesn't re-process them — see the regression test
+``test_split_media_into_folders.test_non_media_files_go_to_non_media_folder``.
+
+Run with ``python SplitMediaIntoFolders.py``.
+"""
+
 import os
 import re
 import shutil
 import logging
-import tkinter as tk
-from tkinter import filedialog
+
+from photo_lib.extensions import is_media
+from photo_lib.tk_picker import choose_directory
 
 SPLIT_FOLDER_RE = re.compile(r'_\d{2}$')
 
-MEDIA_EXTENSIONS = {
-    '.jpg', '.jpeg', '.png', '.gif', '.heic', '.heif',
-    '.mp4', '.mov', '.m4v', '.avi', '.mpg', '.mpeg',
-    '.3gp', '.mkv', '.wmv'
-}
+# The non-media spillover folder name. Excluded from recursive descent so we don't
+# re-process the files we just moved into it (which used to cause infinite nesting:
+# year2024/non_media/non_media/non_media/... until the path-length limit killed it).
+NON_MEDIA_FOLDER_NAME = 'non_media'
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 def is_media_file(file_path):
-    return os.path.splitext(file_path)[1].lower() in MEDIA_EXTENSIONS
+    return is_media(os.path.splitext(file_path)[1])
 
 # Function to move files to a target directory
 def move_file(file_path, target_dir):
@@ -54,11 +73,17 @@ def split_media_files(media_files, parent_folder):
         current_file_count += 1
 
 
-# Function to process all subfolders
 def process_folder_structure(root_folder):
-    for root, dirs, files in os.walk(root_folder):
-        # Filter out subfolders that match the split naming pattern
-        dirs[:] = [d for d in dirs if not SPLIT_FOLDER_RE.search(d)]
+    for root, dirs, _files in os.walk(root_folder):
+        # Skip subfolders we created ourselves: split-suffix folders (e.g. "year2024_01")
+        # and the non_media spillover. Without the non_media exclusion, the recursive walk
+        # finds notes.txt inside year2024/non_media/, treats it as non-media again, and
+        # moves it to year2024/non_media/non_media/, repeating until Windows hits the
+        # path-length limit. See test_split_media_into_folders.py for the regression test.
+        dirs[:] = [
+            d for d in dirs
+            if not SPLIT_FOLDER_RE.search(d) and d != NON_MEDIA_FOLDER_NAME
+        ]
 
         for dir_name in dirs:
             subfolder_path = os.path.join(root, dir_name)
@@ -75,7 +100,7 @@ def process_folder_structure(root_folder):
                             non_media_files.append(file_path)
 
                 if non_media_files:
-                    non_media_folder = os.path.join(subfolder_path, 'non_media')
+                    non_media_folder = os.path.join(subfolder_path, NON_MEDIA_FOLDER_NAME)
                     os.makedirs(non_media_folder, exist_ok=True)
                     for non_media_file in non_media_files:
                         move_file(non_media_file, non_media_folder)
@@ -91,13 +116,8 @@ def process_folder_structure(root_folder):
                 logging.error(f"Error processing subfolder {subfolder_path}: {e}")
 
 
-# Main function to select folder and process it
 def main():
-    root = tk.Tk()
-    root.withdraw()  # Hide the main Tkinter window
-
-    root_folder = filedialog.askdirectory(title="Select the root folder to organize")
-
+    root_folder = choose_directory("Select the root folder to organize")
     if not root_folder:
         logging.warning("No folder selected. Exiting program.")
         return

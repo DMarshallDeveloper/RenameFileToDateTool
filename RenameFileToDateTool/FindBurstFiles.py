@@ -1,16 +1,22 @@
+"""FindBurstFiles.py — list any iOS burst-mode photos in a folder.
+
+iOS' burst mode tags each photo with a shared ``BurstUUID`` so the iPhone can
+group them later. This script just lists every file in the picked folder that
+has that tag set — useful when reviewing whether to trim down a burst.
+
+Read-only diagnostic.
+
+Run with ``python FindBurstFiles.py``.
+"""
+
 import json
 import subprocess
-from tkinter import filedialog, Tk
 
-EXIFTOOL_PATH = "exiftool.exe"
+from photo_lib.binaries import EXIFTOOL
+from photo_lib.tk_picker import choose_directory
+
+EXIFTOOL_PATH = EXIFTOOL  # back-compat alias
 BURST_TAG = "BurstUUID"
-
-
-def choose_directory():
-    """Opens a dialog box for the user to select a folder."""
-    root = Tk()
-    root.withdraw()
-    return filedialog.askdirectory(title="Select Folder to Scan")
 
 
 def scan_folder(directory):
@@ -24,7 +30,7 @@ def scan_folder(directory):
     result = subprocess.run(
         [EXIFTOOL_PATH, f'-{BURST_TAG}', '-json', '-r', directory],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        universal_newlines=True
+        encoding='utf-8', errors='replace'
     )
 
     try:
@@ -42,5 +48,5 @@ def scan_folder(directory):
 
 
 if __name__ == "__main__":
-    directory = choose_directory()
+    directory = choose_directory("Select Folder to Scan")
     scan_folder(directory)

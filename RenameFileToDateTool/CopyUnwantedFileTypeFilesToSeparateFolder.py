@@ -1,9 +1,22 @@
+"""CopyUnwantedFileTypeFilesToSeparateFolder.py — gather legacy-format files for review.
+
+Walks the picked tree and *copies* (not moves) every ``.avi``, ``.3gp``, ``.gif``,
+or ``.png`` into a ``Collected_Files/`` subfolder at the root. Useful as a
+"show me everything I should consider converting" pass before running
+``ConvertUnwantedFileTypesToDifferentFormat.py``.
+
+Originals are untouched.
+
+Run with ``python CopyUnwantedFileTypeFilesToSeparateFolder.py``.
+"""
+
 import os
 import shutil
-import tkinter as tk
-from tkinter import filedialog
 
-# File extensions to search for
+from photo_lib.tk_picker import choose_directory
+
+# Narrowly scoped: legacy formats user wants collected for conversion. Don't reuse
+# the canonical extension sets — this is intentionally a different list.
 TARGET_EXTENSIONS = (".avi", ".3gp", ".gif", ".png")
 
 def copy_files_to_root(folder):
@@ -32,11 +45,7 @@ def copy_files_to_root(folder):
     print("All matching files have been copied!")
 
 if __name__ == "__main__":
-    # Open file dialog to select folder
-    root = tk.Tk()
-    root.withdraw()
-    folder = filedialog.askdirectory(title="Select the Root Folder to Search")
-
+    folder = choose_directory("Select the Root Folder to Search")
     if folder:
         copy_files_to_root(folder)
     else:

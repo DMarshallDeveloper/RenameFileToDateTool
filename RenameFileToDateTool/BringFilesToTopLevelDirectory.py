@@ -1,7 +1,19 @@
+"""BringFilesToTopLevelDirectory.py — flatten a folder tree into a single level.
+
+Walks every subfolder under the picked directory and moves every file up to the
+top level. Name collisions get a ``_1``, ``_2`` etc suffix so nothing's lost.
+
+Useful when a phone photo dump arrives with random subfolder structure and you
+want everything in one place before running ``main.py`` on it.
+
+Run with ``python BringFilesToTopLevelDirectory.py``.
+"""
+
 import os
 import shutil
-import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import messagebox
+
+from photo_lib.tk_picker import choose_directory
 
 
 def compute_moves(root_dir):
@@ -51,10 +63,7 @@ def move_files_to_top_level(root_dir):
 
 
 def main():
-    root = tk.Tk()
-    root.withdraw()
-
-    folder_path = filedialog.askdirectory(title="Select Folder to Flatten")
+    folder_path = choose_directory("Select Folder to Flatten")
     if folder_path:
         move_files_to_top_level(folder_path)
     else:

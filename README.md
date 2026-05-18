@@ -100,7 +100,17 @@ folders that need a `main.py` Mode 1 pass. **Doesn't modify anything.**
 
 ## Pipeline scripts (Google Takeout → master library)
 
-When you download photos via Google Takeout, the workflow is:
+### Quick path: `process_takeout.py` (one command)
+
+```
+python process_takeout.py --takeout C:\Users\<you>\Downloads\takeout-...
+```
+
+Runs both steps below in sequence, depositing canonical-named files in
+`<MASTER_ROOT>/_Inbox/<takeout-folder-basename>/`. From there, drag the files
+to the right year folder or run `IngestInboxToMaster.py`.
+
+### What the orchestrator does internally
 
 1. **`ExtractAndBringAllFilesToTopLevelDirectory.py`** — unzip the Takeout
    archives and flatten the nested `Takeout/Google Photos/<album>/<year>/`
@@ -111,7 +121,14 @@ When you download photos via Google Takeout, the workflow is:
    convert the UTC timestamp to local time at the GPS location (via
    `timezonefinder`), and copy the file to a destination with a canonical name.
 
-3. Drop the destination into `D:\Files\Pictures and Videos\_Inbox\`.
+You can still run those two scripts separately if you want to inspect the
+intermediate state — they each take `--path` (or `--src`/`--dst`) flags. The
+orchestrator just chains them together.
+
+### After the orchestrator
+
+3. **`IngestInboxToMaster.py`** moves the staging files into the right year
+   folders (with the usual Google Photos upload prompt).
 
 4. **`IngestInboxToMaster.py`** — moves files from `_Inbox/` into the right year
    folder. Pauses first to remind you to upload `_Inbox/` to Google Photos in

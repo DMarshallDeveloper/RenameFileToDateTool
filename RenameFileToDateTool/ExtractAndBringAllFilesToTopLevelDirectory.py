@@ -50,7 +50,14 @@ def extract_zip(zip_path: Path, target_dir: Path) -> None:
         print(f"{zip_path.name} is not a valid zip - skipped")
 
 
-def flatten_takeout(root: Path) -> None:
+def flatten_takeout(root: Path) -> Path:
+    """Extract every ``.zip`` in ``root`` and move all resulting files into a
+    single ``Extracted data/`` subfolder. Returns the path of that subfolder
+    so callers can chain into the next step of the pipeline.
+
+    Pure work — no UI prompts. The ``__main__`` block wraps this with a
+    ``messagebox.showinfo`` for the standalone-script UX.
+    """
     extracted_dir = root / "Extracted data"
     extracted_dir.mkdir(exist_ok=True)
 
@@ -88,10 +95,7 @@ def flatten_takeout(root: Path) -> None:
         if dir_.is_dir() and not any(dir_.iterdir()):
             dir_.rmdir()
 
-    messagebox.showinfo(
-        "Completed",
-        f"All files have been flattened into\n{extracted_dir}"
-    )
+    return extracted_dir
 
 
 def main() -> None:
@@ -103,7 +107,8 @@ def main() -> None:
     if not picked:
         messagebox.showwarning("Cancelled", "No folder was selected.")
         return
-    flatten_takeout(Path(picked))
+    extracted_dir = flatten_takeout(Path(picked))
+    messagebox.showinfo("Completed", f"All files have been flattened into\n{extracted_dir}")
 
 
 if __name__ == "__main__":

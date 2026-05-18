@@ -22,6 +22,7 @@ This script handles step 2 of the ingest workflow:
 Run with ``python IngestInboxToMaster.py``.
 """
 
+import argparse
 import os
 import shutil
 import sys
@@ -136,7 +137,7 @@ def execute_moves(moves) -> int:
     return moved
 
 
-def main():
+def main(dry_run: bool = False):
     master_root = select_folder_dialog(
         "Select the master library folder",
         initialdir=DEFAULT_MASTER_ROOT if os.path.isdir(DEFAULT_MASTER_ROOT) else None,
@@ -167,6 +168,11 @@ def main():
 
     summarise_plan(moves, unparseable)
 
+    if dry_run:
+        print(f"[DRY-RUN] Would move {len(moves)} files. Skipping Google Photos upload "
+              "prompt and not touching disk.")
+        return
+
     if not confirm_google_photos_upload(inbox_folder):
         print("Aborted before moving files. Inbox is untouched.")
         return
@@ -184,8 +190,17 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Move newly-renamed files from the inbox into the master library's year folders."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print the planned moves without touching disk or prompting for upload."
+    )
+    args = parser.parse_args()
+
     try:
-        main()
+        main(dry_run=args.dry_run)
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(1)

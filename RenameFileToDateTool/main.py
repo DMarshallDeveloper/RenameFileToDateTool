@@ -27,6 +27,7 @@ Where to read next:
   - ``audit_master.py`` for the diagnostic that tells you which folders need re-running
 """
 
+import argparse
 import os
 from datetime import datetime
 
@@ -112,12 +113,14 @@ def extract_best_date(file_metadata, file_path):
         return None
 
 
-def rename_photos(directory):
+def rename_photos(directory, dry_run: bool = False):
     """Mode 0: rename every file in ``directory`` to ``YYYY-MM-DD HH.MM.SS_N.ext``.
 
     The date comes from the file's embedded metadata (see ``extract_best_date``).
     Files that share a timestamp get unique ``_1``, ``_2`` suffixes. Re-running on
     an already-renamed folder is a no-op — files keep their existing names.
+
+    With ``dry_run=True``, prints the planned renames without touching disk.
     """
     if not directory:
         print("No directory selected. Exiting.")
@@ -137,6 +140,7 @@ def rename_photos(directory):
     # in this run, both used to find the next available ``_N``.
     existing_names = set(os.listdir(directory))
     files_renamed_count = 0
+    prefix = "[DRY-RUN] " if dry_run else ""
 
     for file in files:
         file_path = os.path.join(directory, file)
@@ -159,8 +163,11 @@ def rename_photos(directory):
                 existing_names.add(new_file_name)
                 break
             if new_file_name not in existing_names:
-                new_path = os.path.join(directory, new_file_name)
-                os.rename(file_path, new_path)
+                if dry_run:
+                    print(f"{prefix}{file} -> {new_file_name}")
+                else:
+                    new_path = os.path.join(directory, new_file_name)
+                    os.rename(file_path, new_path)
                 existing_names.discard(file)
                 existing_names.add(new_file_name)
                 files_renamed_count += 1
@@ -170,10 +177,11 @@ def rename_photos(directory):
         if files_renamed_count and files_renamed_count % 50 == 0:
             print('Files renamed:', files_renamed_count)
 
-    print(f"{files_renamed_count} files have been renamed.")
+    verb = "would be renamed" if dry_run else "have been renamed"
+    print(f"{prefix}{files_renamed_count} files {verb}.")
 
 
-def change_exif_date(directory: str):
+def change_exif_date(directory: str, dry_run: bool = False):
     """Mode 1: read each file's date from its filename, write it back into the
     file's EXIF/QuickTime metadata.
 
@@ -181,6 +189,8 @@ def change_exif_date(directory: str):
     any file whose filename doesn't parse as a date. Writes a separate batch for
     images vs videos because the two need different tag-mode rules (see
     ``photo_lib.tag_modes``).
+
+    With ``dry_run=True``, summarizes the planned writes without invoking exiftool.
     """
     if not directory:
         print("No directory selected. Exiting.")
@@ -192,6 +202,7 @@ def change_exif_date(directory: str):
 
     image_file_date_map = {}
     video_file_date_map = {}
+    prefix = "[DRY-RUN] " if dry_run else ""
 
     # Runtime logs live in a sibling logs/ folder (gitignored) so they don't clutter
     # the script directory or get committed.
@@ -221,24 +232,51 @@ def change_exif_date(directory: str):
             else:
                 print(f"Invalid file type: {file}. Skipping.")
 
-        if image_file_date_map:
-            print(f"Writing metadata for {len(image_file_date_map)} image files...")
-            write_exif_dates_batch(image_file_date_map, IMAGE_TAG_MODES, error_log)
+        if dry_run:
+            _preview_exif_writes(image_file_date_map, "image")
+            _preview_exif_writes(video_file_date_map, "video")
+        else:
+            if image_file_date_map:
+                print(f"Writing metadata for {len(image_file_date_map)} image files...")
+                write_exif_dates_batch(image_file_date_map, IMAGE_TAG_MODES, error_log)
 
-        if video_file_date_map:
-            print(f"Writing metadata for {len(video_file_date_map)} video files...")
-            write_exif_dates_batch(video_file_date_map, VIDEO_TAG_MODES, error_log)
+            if video_file_date_map:
+                print(f"Writing metadata for {len(video_file_date_map)} video files...")
+                write_exif_dates_batch(video_file_date_map, VIDEO_TAG_MODES, error_log)
 
     total = len(image_file_date_map) + len(video_file_date_map)
-    print(f"{total} files have been updated.")
+    verb = "would be updated" if dry_run else "have been updated"
+    print(f"{prefix}{total} files {verb}.")
+
+
+def _preview_exif_writes(date_map, kind):
+    """Print the planned EXIF writes for dry-run mode. Shows the first 10 entries
+    and a count of any remainder."""
+    if not date_map:
+        return
+    print(f"[DRY-RUN] Would write metadata for {len(date_map)} {kind} files:")
+    for i, (path, (dt, file_tz)) in enumerate(date_map.items()):
+        if i >= 10:
+            print(f"  ... and {len(date_map) - 10} more")
+            break
+        print(f"  {os.path.basename(path)}: dt={dt.isoformat()} tz={file_tz}")
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Rename files from EXIF dates (mode 0) or write EXIF from filenames (mode 1)."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print the planned renames or EXIF writes without modifying anything."
+    )
+    args = parser.parse_args()
+
     directory = choose_directory("Select Photos Directory")
     editing_exif_not_name = input("Are you renaming files from date metadata (0) "
                                   "or writing metadata from filename (1): ")
 
     if editing_exif_not_name == '0':
-        rename_photos(directory)
+        rename_photos(directory, dry_run=args.dry_run)
     else:
-        change_exif_date(directory)
+        change_exif_date(directory, dry_run=args.dry_run)

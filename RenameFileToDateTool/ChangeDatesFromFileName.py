@@ -17,6 +17,7 @@ produce identical results on identical inputs.
 Run with ``python ChangeDatesFromFileName.py``.
 """
 
+import argparse
 import os
 
 from photo_lib.exiftool_runner import get_all_metadata, write_exif_dates_batch
@@ -37,7 +38,12 @@ def extract_date_from_filename(filename):
     return parse_filename_datetime(filename)
 
 
-def change_exif_date(directory: str):
+def change_exif_date(directory: str, dry_run: bool = False):
+    """Recursively rewrite EXIF/QuickTime dates to match each filename.
+
+    With ``dry_run=True``, prints a summary of the planned writes per kind
+    (image/video) without invoking exiftool.
+    """
     if not directory:
         print("No directory selected. Exiting.")
         return
@@ -61,6 +67,7 @@ def change_exif_date(directory: str):
 
     image_file_date_map = {}
     video_file_date_map = {}
+    prefix = "[DRY-RUN] " if dry_run else ""
 
     # Runtime logs live in a sibling logs/ folder (gitignored).
     logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
@@ -77,19 +84,47 @@ def change_exif_date(directory: str):
             elif is_video(ext):
                 video_file_date_map[file_path] = (date_time, file_tz)
 
-        if image_file_date_map:
-            print(f"Writing metadata for {len(image_file_date_map)} image files...")
-            write_exif_dates_batch(image_file_date_map, IMAGE_TAG_MODES, logging_file)
+        if dry_run:
+            _preview_exif_writes(image_file_date_map, "image")
+            _preview_exif_writes(video_file_date_map, "video")
+        else:
+            if image_file_date_map:
+                print(f"Writing metadata for {len(image_file_date_map)} image files...")
+                write_exif_dates_batch(image_file_date_map, IMAGE_TAG_MODES, logging_file)
 
-        if video_file_date_map:
-            print(f"Writing metadata for {len(video_file_date_map)} video files...")
-            write_exif_dates_batch(video_file_date_map, VIDEO_TAG_MODES, logging_file)
+            if video_file_date_map:
+                print(f"Writing metadata for {len(video_file_date_map)} video files...")
+                write_exif_dates_batch(video_file_date_map, VIDEO_TAG_MODES, logging_file)
 
         total = len(image_file_date_map) + len(video_file_date_map)
-        logging_file.write(f"{total} files have been updated.\n")
-        print(f"{total} files have been updated.")
+        verb = "would be updated" if dry_run else "have been updated"
+        if not dry_run:
+            logging_file.write(f"{total} files have been updated.\n")
+        print(f"{prefix}{total} files {verb}.")
+
+
+def _preview_exif_writes(date_map, kind):
+    """Print the planned EXIF writes for dry-run mode. Shows the first 10 entries
+    and a count of any remainder."""
+    if not date_map:
+        return
+    print(f"[DRY-RUN] Would write metadata for {len(date_map)} {kind} files:")
+    for i, (path, (dt, file_tz)) in enumerate(date_map.items()):
+        if i >= 10:
+            print(f"  ... and {len(date_map) - 10} more")
+            break
+        print(f"  {os.path.relpath(path)}: dt={dt.isoformat()} tz={file_tz}")
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Recursively rewrite EXIF/QuickTime dates from filenames."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print the planned EXIF writes without invoking exiftool."
+    )
+    args = parser.parse_args()
+
     directory = choose_directory("Select Photos Directory")
-    change_exif_date(directory)
+    change_exif_date(directory, dry_run=args.dry_run)

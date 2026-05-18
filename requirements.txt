@@ -1,3 +1,6 @@
 pillow>=11.0,<12
 python-dateutil>=2.9,<3
 timezonefinder>=8.0,<9
+# tzdata: Python's zoneinfo module needs this on Windows (the OS ships no
+# system tzdata). Required for ZoneInfo("Pacific/Auckland") in takeout_geo.
+tzdata

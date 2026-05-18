@@ -1,4 +1,4 @@
-"""FindBurstFiles.py — list any iOS burst-mode photos in a folder.
+"""find_burst_files.py — list any iOS burst-mode photos in a folder.
 
 iOS' burst mode tags each photo with a shared ``BurstUUID`` so the iPhone can
 group them later. This script just lists every file in the picked folder that
@@ -6,7 +6,7 @@ has that tag set — useful when reviewing whether to trim down a burst.
 
 Read-only diagnostic.
 
-Run with ``python FindBurstFiles.py``.
+Run with ``python find_burst_files.py``.
 """
 
 import argparse

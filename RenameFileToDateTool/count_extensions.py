@@ -1,13 +1,13 @@
-"""CountFileExtensionsInFolder.py — quick "how many of each format do I have?"
+"""count_extensions.py — quick "how many of each format do I have?"
 
 Recursively walks the picked folder and prints a count of each file extension,
 sorted by frequency. Useful for spotting weird formats lurking in the library
 (``.aee``, ``.heic``, ``.HEIC`` vs ``.heic`` casing, etc).
 
-Uses just the filename's extension — see ``CountFileExtensionsInFolderWithExif.py``
+Uses just the filename's extension — see ``count_extensions_by_content.py``
 for the more accurate version that asks exiftool what the file *actually* is.
 
-Run with ``python CountFileExtensionsInFolder.py``.
+Run with ``python count_extensions.py``.
 """
 
 import argparse

@@ -1,4 +1,4 @@
-"""Tests for SplitMediaIntoFolders.py: the 100-files-per-subfolder splitter that
+"""Tests for split_media_into_folders.py: the 100-files-per-subfolder splitter that
 prepares photos for batched upload to a phone.
 """
 
@@ -11,7 +11,7 @@ import unittest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, 'RenameFileToDateTool'))
 
-import SplitMediaIntoFolders as splitter  # noqa: E402
+import split_media_into_folders as splitter  # noqa: E402
 
 
 class TestIsMediaFile(unittest.TestCase):

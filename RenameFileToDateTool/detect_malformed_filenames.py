@@ -1,4 +1,4 @@
-"""DetectMalformedFileNames.py — print any filenames that drifted off-spec.
+"""detect_malformed_filenames.py — print any filenames that drifted off-spec.
 
 The master library convention is ``YYYY-MM-DD HH.MM.SS_N.ext`` (3- or 4-char
 extension). This script walks the picked folder and prints the full path of any
@@ -6,9 +6,9 @@ file that doesn't match that exact shape — usually a file you forgot to rename
 or one that came from a script that used an older naming format.
 
 Read-only. Use the output as a worklist for ``write_exif_from_filename.py`` or
-``ChangeDatesFromFileName.py``.
+``write_exif_from_filename.py``.
 
-Run with ``python DetectMalformedFileNames.py``.
+Run with ``python detect_malformed_filenames.py``.
 """
 
 import argparse

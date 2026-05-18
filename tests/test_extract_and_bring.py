@@ -1,4 +1,4 @@
-"""Tests for ExtractAndBringAllFilesToTopLevelDirectory.py: the Takeout-zip
+"""Tests for extract_and_flatten_takeout.py: the Takeout-zip
 flattener. Targets ``unique_path`` (collision resolution) and end-to-end behavior of
 ``flatten_takeout`` minus the messagebox UI.
 """
@@ -15,7 +15,7 @@ from unittest import mock
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, 'RenameFileToDateTool'))
 
-import ExtractAndBringAllFilesToTopLevelDirectory as flatten  # noqa: E402
+import extract_and_flatten_takeout as flatten  # noqa: E402
 
 
 class TestUniquePath(unittest.TestCase):

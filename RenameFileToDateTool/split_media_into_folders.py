@@ -1,4 +1,4 @@
-"""SplitMediaIntoFolders.py — break a big folder into 100-file batches.
+"""split_media_into_folders.py — break a big folder into 100-file batches.
 
 iOS' Photos app won't reliably accept large bulk uploads from Google Drive. The
 user's workaround is to slice a year folder into batches of 100, drop each batch
@@ -14,7 +14,7 @@ The recursive walk skips folders we've already created (``_NN`` split folders an
 ``non_media``) so a second run doesn't re-process them — see the regression test
 ``test_split_media_into_folders.test_non_media_files_go_to_non_media_folder``.
 
-Run with ``python SplitMediaIntoFolders.py``.
+Run with ``python split_media_into_folders.py``.
 """
 
 import argparse

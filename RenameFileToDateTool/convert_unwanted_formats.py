@@ -1,4 +1,4 @@
-"""ConvertUnwantedFileTypesToDifferentFormat.py — re-encode legacy video formats to mp4.
+"""convert_unwanted_formats.py — re-encode legacy video formats to mp4.
 
 Some old container formats don't play nicely in Google Photos / iOS Photos, and
 some (``.mpg`` in particular) can't even accept exiftool metadata writes — which
@@ -24,7 +24,7 @@ Uses ffmpeg. Originals are NOT deleted — you pick a separate output folder;
 once you've verified the new files play correctly, you can delete the originals
 yourself. Conversion failures get logged to ``conversion_errors.log``.
 
-Run with ``python ConvertUnwantedFileTypesToDifferentFormat.py``.
+Run with ``python convert_unwanted_formats.py``.
 """
 
 import argparse

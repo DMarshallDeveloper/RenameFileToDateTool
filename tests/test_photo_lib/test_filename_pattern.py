@@ -38,7 +38,7 @@ class TestParseFilenameDatetime(unittest.TestCase):
 
 
 class TestParseFilenameYear(unittest.TestCase):
-    """parse_filename_year is the year-only fast path used by IngestInboxToMaster."""
+    """parse_filename_year is the year-only fast path used by ingest_inbox_to_master."""
 
     def test_normal_year(self):
         self.assertEqual(filename_pattern.parse_filename_year('2024-11-30 18.20.00_1.mov'), 2024)
@@ -136,7 +136,7 @@ class TestMaybeRenamePlaceholder(unittest.TestCase):
 
 class TestCanonicalFilenameRe(unittest.TestCase):
     """CANONICAL_FILENAME_RE is the strict ``YYYY-MM-DD HH.MM.SS_N.ext`` shape that
-    DetectMalformedFileNames uses to flag drift from the master-library convention."""
+    detect_malformed_filenames uses to flag drift from the master-library convention."""
 
     def test_canonical_form_matches(self):
         self.assertIsNotNone(

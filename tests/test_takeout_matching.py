@@ -1,4 +1,4 @@
-"""Tests for UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py — the script that
+"""Tests for update_filename_to_date_from_google_takeout_json_metadata.py — the script that
 ingests a Google Takeout dump and copies each media file to the destination with a
 canonical YYYY-MM-DD HH.MM.SS_N.ext filename based on the JSON's photoTakenTime.
 
@@ -19,7 +19,7 @@ import unittest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, 'RenameFileToDateTool'))
 
-import UpdateFileNameToDateFromGoogleTakeoutJSONMetadata as takeout  # noqa: E402
+import update_filename_to_date_from_google_takeout_json_metadata as takeout  # noqa: E402
 
 
 class TestInferMediaFilenameFromJson(unittest.TestCase):

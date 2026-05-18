@@ -1,4 +1,4 @@
-"""Tests for BringFilesToTopLevelDirectory.py: pulling nested files up to the root,
+"""Tests for flatten_folder.py: pulling nested files up to the root,
 with deterministic collision resolution.
 """
 
@@ -11,7 +11,7 @@ import unittest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, 'RenameFileToDateTool'))
 
-import BringFilesToTopLevelDirectory as bring  # noqa: E402
+import flatten_folder as bring  # noqa: E402
 
 
 class TestComputeMoves(unittest.TestCase):

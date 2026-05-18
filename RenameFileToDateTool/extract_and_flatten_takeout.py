@@ -1,4 +1,4 @@
-"""ExtractAndBringAllFilesToTopLevelDirectory.py — Takeout-zip flattener.
+"""extract_and_flatten_takeout.py — Takeout-zip flattener.
 
 Google Takeout downloads come as a stack of large .zip files, each containing
 ``Takeout/Google Photos/<album>/<year>/<file>`` nested structure. This script:
@@ -10,9 +10,9 @@ Google Takeout downloads come as a stack of large .zip files, each containing
   4. Deletes the now-empty intermediate folders.
 
 The output is ready to feed into
-``UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py``.
+``update_filename_to_date_from_google_takeout_json_metadata.py``.
 
-Run with ``python ExtractAndBringAllFilesToTopLevelDirectory.py``.
+Run with ``python extract_and_flatten_takeout.py``.
 """
 
 import argparse

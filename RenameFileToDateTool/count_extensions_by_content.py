@@ -1,4 +1,4 @@
-"""CountFileExtensionsInFolderWithExif.py — like CountFileExtensionsInFolder,
+"""count_extensions_by_content.py — like count_extensions,
 but uses exiftool to ask "what format is this *really*?" instead of just trusting
 the filename extension.
 
@@ -7,7 +7,7 @@ actually be HEIC bytes (common after iOS exports), and exiftool will tell you so
 
 Read-only.
 
-Run with ``python CountFileExtensionsInFolderWithExif.py``.
+Run with ``python count_extensions_by_content.py``.
 """
 
 import argparse

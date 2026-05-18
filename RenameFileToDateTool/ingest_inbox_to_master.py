@@ -1,4 +1,4 @@
-"""IngestInboxToMaster.py — move newly-named files into the master library.
+"""ingest_inbox_to_master.py — move newly-named files into the master library.
 
 The master photo library at ``D:\\Files\\Pictures and Videos\\`` is organised by
 year folders (``2024/``, ``2025/``, …, plus a bundled ``2000 - 2010/`` for older
@@ -8,7 +8,7 @@ what's "new and unmerged" vs what's already in the library.
 
 This script handles step 2 of the ingest workflow:
   1. (You do this elsewhere) Run ``write_exif_from_filename.py`` or
-     ``UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py`` to give every file
+     ``update_filename_to_date_from_google_takeout_json_metadata.py`` to give every file
      in ``_Inbox/`` its canonical ``YYYY-MM-DD HH.MM.SS_N.ext`` name.
   2. Run this script:
      a. Pick the master folder (defaults to ``D:\\Files\\Pictures and Videos``).
@@ -19,7 +19,7 @@ This script handles step 2 of the ingest workflow:
         already uploaded.
      e. After you confirm, it moves the files into the right year folders.
 
-Run with ``python IngestInboxToMaster.py``.
+Run with ``python ingest_inbox_to_master.py``.
 """
 
 import argparse

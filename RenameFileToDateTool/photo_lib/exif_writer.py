@@ -1,5 +1,5 @@
 """Shared EXIF-from-filename writer used by ``write_exif_from_filename.py`` Mode 1 and
-``ChangeDatesFromFileName.py``.
+``write_exif_from_filename.py``.
 
 Both callers do the same thing — for each candidate file, parse the date out of
 the filename, apply the placeholder bump (renaming the file if it kicks in),

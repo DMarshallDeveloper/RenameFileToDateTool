@@ -1,4 +1,4 @@
-"""Tests for RemoveLivePhotoVideos.py: detecting iOS Live Photo split-video files.
+"""Tests for remove_live_photo_videos.py: detecting iOS Live Photo split-video files.
 
 A Live Photo split is an image plus a short video that share the same name stem
 (e.g. ``IMG_3118.HEIC`` + ``IMG_3118.MP4``). This script identifies them by:
@@ -17,7 +17,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'RenameFileToDateTool'))
 
-import RemoveLivePhotoVideos as rlpv  # noqa: E402
+import remove_live_photo_videos as rlpv  # noqa: E402
 from tests._fixture_helpers import copy_fixture_image, copy_fixture_video  # noqa: E402
 
 

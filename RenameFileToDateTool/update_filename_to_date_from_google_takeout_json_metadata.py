@@ -1,4 +1,4 @@
-"""UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py — Takeout dump ingester.
+"""update_filename_to_date_from_google_takeout_json_metadata.py — Takeout dump ingester.
 
 Google Takeout downloads photos as a folder full of media files (jpg, mov, heic, …)
 each accompanied by a ``.json`` sidecar that holds the *real* date the photo was
@@ -18,12 +18,12 @@ often the only reliable source). This script:
   5. Second pass: any orphan media files (Live Photo videos without their own JSON)
      inherit the timestamp of their companion still image.
 
-Run with ``python UpdateFileNameToDateFromGoogleTakeoutJSONMetadata.py``.
+Run with ``python update_filename_to_date_from_google_takeout_json_metadata.py``.
 You'll be prompted to pick a source folder, a destination folder, and whether
 to dry-run first.
 
 After this finishes, the destination folder is ready to drop into the master
-library's ``_Inbox`` for ingestion via ``IngestInboxToMaster.py``.
+library's ``_Inbox`` for ingestion via ``ingest_inbox_to_master.py``.
 """
 
 import bisect

@@ -1,13 +1,13 @@
-"""CopyUnwantedFileTypeFilesToSeparateFolder.py — gather legacy-format files for review.
+"""collect_unwanted_formats.py — gather legacy-format files for review.
 
 Walks the picked tree and *copies* (not moves) every ``.avi``, ``.3gp``, ``.gif``,
 or ``.png`` into a ``Collected_Files/`` subfolder at the root. Useful as a
 "show me everything I should consider converting" pass before running
-``ConvertUnwantedFileTypesToDifferentFormat.py``.
+``convert_unwanted_formats.py``.
 
 Originals are untouched.
 
-Run with ``python CopyUnwantedFileTypeFilesToSeparateFolder.py``.
+Run with ``python collect_unwanted_formats.py``.
 """
 
 import argparse

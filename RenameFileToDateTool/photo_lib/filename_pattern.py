@@ -25,11 +25,11 @@ FILENAME_PARTS_RE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})[ _](\d{2})[.\-](\d{2})
 # named ``2026-04-09 19.52_1.jpg`` (older script output) still gets a sensible date.
 FILENAME_DATE_NO_SECONDS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})[ _](\d{2}[.\-]\d{2})(?!\d)')
 
-# Year-only matcher, used by IngestInboxToMaster.py
+# Year-only matcher, used by ingest_inbox_to_master.py
 FILENAME_YEAR_RE = re.compile(r'^(\d{4})-\d{2}-\d{2}')
 
 # Strict "fully canonical" pattern: with _N suffix and 3-4-char extension.
-# DetectMalformedFileNames.py uses this to flag anything that drifted off-spec.
+# detect_malformed_filenames.py uses this to flag anything that drifted off-spec.
 CANONICAL_FILENAME_RE = re.compile(
     r'^\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}_\d+\.[a-zA-Z0-9]{3,4}$'
 )

@@ -1,4 +1,4 @@
-"""Tests for IngestInboxToMaster.py: the script that moves correctly-named files
+"""Tests for ingest_inbox_to_master.py: the script that moves correctly-named files
 out of the _Inbox staging folder into the right year folder of the master library.
 
 Covers:
@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'RenameFileToDateTool'))
 
-import IngestInboxToMaster as ingest  # noqa: E402
+import ingest_inbox_to_master as ingest  # noqa: E402
 
 
 def make_empty(path):

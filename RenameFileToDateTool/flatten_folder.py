@@ -1,4 +1,4 @@
-"""BringFilesToTopLevelDirectory.py — flatten a folder tree into a single level.
+"""flatten_folder.py — flatten a folder tree into a single level.
 
 Walks every subfolder under the picked directory and moves every file up to the
 top level. Name collisions get a ``_1``, ``_2`` etc suffix so nothing's lost.
@@ -6,7 +6,7 @@ top level. Name collisions get a ``_1``, ``_2`` etc suffix so nothing's lost.
 Useful when a phone photo dump arrives with random subfolder structure and you
 want everything in one place before running ``write_exif_from_filename.py`` on it.
 
-Run with ``python BringFilesToTopLevelDirectory.py``.
+Run with ``python flatten_folder.py``.
 """
 
 import argparse

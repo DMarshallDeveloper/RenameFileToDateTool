@@ -34,7 +34,7 @@ def resolve_directory(cli_path: str | None, title: str,
     A bad ``--path`` aborts loudly rather than silently falling back to the picker.
 
     Set ``must_exist=False`` for output-folder args where the script will create
-    the directory if absent (e.g. ConvertUnwantedFileTypesToDifferentFormat's --output).
+    the directory if absent (e.g. convert_unwanted_formats's --output).
     """
     if cli_path:
         if must_exist and not os.path.isdir(cli_path):

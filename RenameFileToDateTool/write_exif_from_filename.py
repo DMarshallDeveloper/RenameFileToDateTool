@@ -5,10 +5,10 @@ but rewrites the embedded metadata so it matches what the filename already
 says. Useful when filenames are correct but EXIF dates are missing or wrong
 (typical after a Google Takeout round-trip, which strips most EXIF).
 
-This operates on the immediate contents of the picked folder. For a recursive
-version that walks every subfolder of the master library, see
-``ChangeDatesFromFileName.py`` — both share the same writer implementation in
-``photo_lib.exif_writer``.
+Recursive by default — pointed at the master library root, it sweeps every
+year folder in one pass, silently skipping any file whose name doesn't parse
+as a date. Pre-filtering keeps the noise down on big trees; files that don't
+look like media files are skipped without warning.
 
 Run with::
 
@@ -34,6 +34,8 @@ import logging
 import os
 
 from photo_lib.exif_writer import write_exif_for_files
+from photo_lib.extensions import MEDIA_EXTENSIONS, normalize_extension
+from photo_lib.filename_pattern import parse_filename_datetime
 from photo_lib.logging_setup import configure_logging
 from photo_lib.tk_picker import resolve_directory
 
@@ -41,32 +43,49 @@ logger = logging.getLogger("photo_lib")
 
 
 def change_exif_date(directory: str, dry_run: bool = False):
-    """Rewrite each file's EXIF/QuickTime dates from its filename.
+    """Recursively rewrite EXIF/QuickTime dates from each file's filename.
 
-    Operates on the immediate contents of ``directory`` only (non-recursive);
-    see ``ChangeDatesFromFileName.py`` for the recursive variant. Both share
-    ``photo_lib.exif_writer.write_exif_for_files`` so behavior stays in lockstep.
+    Pre-filters candidates to "media files with a parseable date in the name"
+    so the helper isn't spammed with skip warnings for every random file in a
+    big tree. The actual write work happens in
+    ``photo_lib.exif_writer.write_exif_for_files``.
     """
     if not directory:
         logger.info("No directory selected. Exiting.")
         return
 
-    file_paths = [
-        os.path.join(directory, filename)
-        for filename in os.listdir(directory)
-        if os.path.isfile(os.path.join(directory, filename))
-    ]
-    write_exif_for_files(file_paths, dry_run=dry_run)
+    candidate_file_paths = []
+    for current_dir, _subdirs, filenames in os.walk(directory):
+        for filename in filenames:
+            if parse_filename_datetime(filename) is None:
+                continue
+            file_extension = normalize_extension(os.path.splitext(filename)[1])
+            if file_extension not in MEDIA_EXTENSIONS:
+                continue
+            candidate_file_paths.append(os.path.join(current_dir, filename))
+
+    logger.info("Reading existing EXIF for %d files...", len(candidate_file_paths))
+    # Anchor relpath to the directory being processed (not cwd) so log paths
+    # render cleanly AND so this works when ``directory`` is on a different
+    # mount point than cwd (e.g. tests using a tmp folder on C: while cwd is D:).
+    def _log_path(file_path: str) -> str:
+        return os.path.relpath(file_path, directory)
+    write_exif_for_files(
+        candidate_file_paths,
+        dry_run=dry_run,
+        path_for_log=_log_path,
+    )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Write EXIF / QuickTime dates derived from each file's "
-                    "canonical name."
+        description="Recursively rewrite EXIF / QuickTime dates from each "
+                    "file's canonical name."
     )
     parser.add_argument(
         "--path",
-        help="Directory to operate on. If omitted, opens the Tk folder picker.",
+        help="Directory to operate on (recursively). If omitted, opens the Tk "
+             "folder picker.",
     )
     parser.add_argument(
         "--dry-run", action="store_true",

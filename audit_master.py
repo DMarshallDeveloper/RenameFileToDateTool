@@ -11,9 +11,8 @@ This script samples a few files per (year, extension) for the EXIF check
 (``check_file``) and walks every file for the structural checks
 (``check_extension_mismatches``, ``check_year_folder_mismatches``,
 ``check_non_canonical_filenames``). It prints a per-folder verdict plus a
-list of structural anomalies you can act on with ``write_exif_from_filename.py`` (mode 1),
-``ChangeDatesFromFileName.py``, ``ConvertUnwantedFileTypesToDifferentFormat.py``,
-or a one-off rename.
+list of structural anomalies you can act on with ``write_exif_from_filename.py``,
+``convert_unwanted_formats.py``, or a one-off rename.
 
 **Read-only — modifies nothing.** Safe to run anytime.
 
@@ -139,7 +138,7 @@ def check_file(filename, metadata, expected_dt, is_video):
     audit clean.
     """
     results = []
-    # Apply the same Jan-1 placeholder bump write_exif_from_filename.py applies when writing. Without this,
+    # Apply the same Jan-1 placeholder bump the writer applies. Without this,
     # a 2000-01-01 file with EXIF correctly bumped to 13:00 would be flagged as bad.
     expected_dt = apply_placeholder_time_bump(filename, expected_dt)
     # Detect the photo's true TZ from its existing metadata (CreationDate offset,

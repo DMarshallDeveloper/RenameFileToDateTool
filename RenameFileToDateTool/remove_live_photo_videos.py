@@ -1,4 +1,4 @@
-"""RemoveLivePhotoVideos.py — quarantine the 1-3 second video clips that come
+"""remove_live_photo_videos.py — quarantine the 1-3 second video clips that come
 from iOS Live Photos.
 
 iOS Live Photos are a still image plus a tiny accompanying video. When you download
@@ -18,7 +18,7 @@ WARNING: per the user's photo-library workflow, this is an OPTIONAL tool. The
 default ingest workflow keeps the Live Photo videos alongside the stills. Only
 use this when you've decided a particular batch of clips is genuinely junk.
 
-Run with ``python RemoveLivePhotoVideos.py``.
+Run with ``python remove_live_photo_videos.py``.
 """
 
 import os

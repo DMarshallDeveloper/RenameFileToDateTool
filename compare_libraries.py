@@ -58,7 +58,7 @@ PLACEHOLDER_PAIR_RE = re.compile(r'^(\d{4})-01-01 (00\.00\.00|13\.00\.00)(_\d+\.
 # worth a look UNLESS it's a known transcode (where the format changed entirely).
 SIZE_TOLERANCE_BYTES = 100 * 1024
 
-# Extensions the converter (ConvertUnwantedFileTypesToDifferentFormat.py) turns
+# Extensions the converter (convert_unwanted_formats.py) turns
 # into .mp4. If a backup file with one of these extensions has a master-side
 # counterpart with .mp4, treat as a transcode (expected to differ in size).
 TRANSCODED_FROM_EXTS = {'.mpg', '.3gp', '.avi', '.gif'}

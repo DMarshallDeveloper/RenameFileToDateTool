@@ -1,9 +1,9 @@
-"""ListAllFilesInFolder.py — print every filename under a folder (recursive).
+"""list_files.py — print every filename under a folder (recursive).
 
 Trivial helper for piping into other tools or eyeballing what's in a tree.
 Prints just filenames, no paths. Recurses through all subfolders.
 
-Run with ``python ListAllFilesInFolder.py``.
+Run with ``python list_files.py``.
 """
 
 import argparse

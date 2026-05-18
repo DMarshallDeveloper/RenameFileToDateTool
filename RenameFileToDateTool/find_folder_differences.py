@@ -1,11 +1,11 @@
-"""FindFolderDifferences.py — print which files are in folder A but not B (and vice versa).
+"""find_folder_differences.py — print which files are in folder A but not B (and vice versa).
 
 Quick sanity-check tool: pick two folders, get a list of files unique to each.
 Compares filenames only (not contents) and only one level deep — doesn't recurse.
 
 Useful for "did all my files copy across?" checks.
 
-Run with ``python FindFolderDifferences.py``.
+Run with ``python find_folder_differences.py``.
 """
 
 import argparse

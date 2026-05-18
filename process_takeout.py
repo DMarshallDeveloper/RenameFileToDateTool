@@ -11,11 +11,11 @@ files into the master library you need to:
      and copy the file to a destination with a canonical
      ``YYYY-MM-DD HH.MM.SS_N.ext`` name.
   3. Drop the destination into ``_Inbox/`` so the regular ingest flow
-     (``IngestInboxToMaster.py``) can fan it out into year folders.
+     (``ingest_inbox_to_master.py``) can fan it out into year folders.
 
 This script runs steps 1–3 in a single command. After it finishes, the
 destination folder is ready for either a manual drag into a year folder
-or a run of ``IngestInboxToMaster.py``.
+or a run of ``ingest_inbox_to_master.py``.
 
 Run:
     python process_takeout.py --takeout <download-folder> [--dst <staging>]
@@ -41,8 +41,8 @@ from photo_lib.tk_picker import resolve_directory  # noqa: E402
 
 # Orchestrating the two existing scripts. The functions imported here are
 # the pure work entry points — they don't pop dialogs or prompts.
-from ExtractAndBringAllFilesToTopLevelDirectory import flatten_takeout  # noqa: E402
-from UpdateFileNameToDateFromGoogleTakeoutJSONMetadata import (  # noqa: E402
+from extract_and_flatten_takeout import flatten_takeout  # noqa: E402
+from update_filename_to_date_from_google_takeout_json_metadata import (  # noqa: E402
     process_and_copy_media_files,
 )
 
@@ -87,7 +87,7 @@ def process(takeout_path: str, destination: str, dry_run: bool = False) -> None:
     else:
         logger.info("PIPELINE COMPLETE. Staged files: %s", destination)
         logger.info("Next: review the staging folder, then run")
-        logger.info("      python RenameFileToDateTool/IngestInboxToMaster.py "
+        logger.info("      python RenameFileToDateTool/ingest_inbox_to_master.py "
                     "--master \"%s\" --inbox \"%s\"", MASTER_ROOT, destination)
     logger.info("=" * 72)
 

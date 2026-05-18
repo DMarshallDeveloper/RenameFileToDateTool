@@ -1,4 +1,4 @@
-"""Tests for DetectMalformedFileNames.py: regex that flags filenames not matching
+"""Tests for detect_malformed_filenames.py: regex that flags filenames not matching
 the master library's ``YYYY-MM-DD HH.MM.SS_N.ext`` convention.
 
 The script's only logic is the regex pattern; we test it directly via re.match so we

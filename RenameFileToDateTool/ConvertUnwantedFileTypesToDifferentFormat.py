@@ -1,13 +1,28 @@
-"""ConvertUnwantedFileTypesToDifferentFormat.py — re-encode legacy formats to mp4/jpg.
+"""ConvertUnwantedFileTypesToDifferentFormat.py — re-encode legacy video formats to mp4.
 
-Some old formats (``.avi``, ``.3gp``, ``.gif`` videos, the iOS Live Photo ``.aee``
-sidecar, ``.png`` images) don't play nicely with Google Photos or iOS. This script
-transcodes them to playable equivalents (``.mp4`` and ``.jpg``) so the master
-library is consistent.
+Some old container formats don't play nicely in Google Photos / iOS Photos, and
+some (``.mpg`` in particular) can't even accept exiftool metadata writes — which
+breaks the master library's "filename ≡ EXIF" invariant. This script transcodes
+those formats to ``.mp4`` so the rest of the pipeline can handle them uniformly.
 
-Uses ffmpeg for video and Pillow for image conversion. Originals are NOT deleted —
-you pick a separate output folder, and the conversion failures get logged to
-``conversion_errors.log`` next to wherever you ran the script from.
+Targets:
+  - ``.mpg`` — exiftool can't write metadata; iOS Photos won't import natively.
+  - ``.avi`` / ``.3gp`` — old camcorder/phone formats, spotty viewer support.
+  - ``.gif`` — animated GIFs become mp4 for proper video playback.
+  - ``.mkv`` / ``.wmv`` / ``.flv`` / ``.mts`` / ``.m2ts`` — defensive coverage
+    for anything that might land via Takeout or a thumb drive.
+
+PNG conversion (.png → .jpg) is intentionally not included anymore: PNG → JPG
+is lossless → lossy, which destroys the original. Most modern viewers handle
+PNG fine. If you have problematic PNGs, decide on each individually rather
+than bulk-converting.
+
+``.aee`` (Apple Live Photo edit sidecar) is also excluded: it's a tiny XML
+file, not video, and ffmpeg can't sensibly transcode it.
+
+Uses ffmpeg. Originals are NOT deleted — you pick a separate output folder;
+once you've verified the new files play correctly, you can delete the originals
+yourself. Conversion failures get logged to ``conversion_errors.log``.
 
 Run with ``python ConvertUnwantedFileTypesToDifferentFormat.py``.
 """
@@ -22,11 +37,12 @@ from photo_lib.tk_picker import resolve_directory
 
 FFMPEG_EXE = FFMPEG  # back-compat alias
 
-# This converter is narrowly scoped: it transcodes formats that don't play nicely
-# elsewhere (avi/3gp/gif → mp4) and treats .aee (iOS Live Photo sidecar) as a video.
+# This converter is narrowly scoped: only the formats that genuinely cause
+# problems downstream (un-writeable metadata, missing viewer support, etc).
 # Don't reuse the canonical extension sets — this script needs its own narrow list.
-VIDEO_EXTENSIONS = ('.avi', '.3gp', '.gif', '.aee')
-IMAGE_EXTENSIONS = ('.png',)
+VIDEO_EXTENSIONS = ('.avi', '.3gp', '.gif', '.mpg',
+                    '.mkv', '.wmv', '.flv', '.mts', '.m2ts')
+IMAGE_EXTENSIONS = ()  # PNG removed — lossless→lossy conversion is destructive
 
 
 def convert_video_to_mp4(input_file, output_folder):

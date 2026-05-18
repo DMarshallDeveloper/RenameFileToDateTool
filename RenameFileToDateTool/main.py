@@ -33,7 +33,7 @@ import os
 from datetime import datetime
 
 from photo_lib.binaries import EXIFTOOL  # re-exported for back-compat below
-from photo_lib.exiftool_runner import get_all_metadata, write_exif_dates_batch
+from photo_lib.exiftool_runner import get_all_metadata, is_metadata_in_sync, write_exif_dates_batch
 from photo_lib.logging_setup import configure_logging
 from photo_lib.extensions import (
     IMAGE_EXTENSIONS,
@@ -207,6 +207,7 @@ def change_exif_date(directory: str, dry_run: bool = False):
 
     image_file_date_map = {}
     video_file_date_map = {}
+    skipped_in_sync = 0
     prefix = "[DRY-RUN] " if dry_run else ""
 
     for file in files:
@@ -242,11 +243,21 @@ def change_exif_date(directory: str, dry_run: bool = False):
 
         ext = normalize_extension(file_metadata.get("FileTypeExtension", ""))
         if is_image(ext):
-            image_file_date_map[file_path] = (date_time, file_tz)
+            tag_modes = IMAGE_TAG_MODES
         elif is_video(ext):
-            video_file_date_map[file_path] = (date_time, file_tz)
+            tag_modes = VIDEO_TAG_MODES
         else:
             logger.warning("Invalid file type: %s. Skipping.", file)
+            continue
+
+        if is_metadata_in_sync(file_metadata, date_time, file_tz, tag_modes):
+            skipped_in_sync += 1
+            continue
+
+        if is_image(ext):
+            image_file_date_map[file_path] = (date_time, file_tz)
+        else:
+            video_file_date_map[file_path] = (date_time, file_tz)
 
     if dry_run:
         _preview_exif_writes(image_file_date_map, "image")
@@ -263,6 +274,8 @@ def change_exif_date(directory: str, dry_run: bool = False):
     total = len(image_file_date_map) + len(video_file_date_map)
     verb = "would be updated" if dry_run else "have been updated"
     logger.info("%s%d files %s.", prefix, total, verb)
+    if skipped_in_sync:
+        logger.info("%s%d files already in sync, skipped.", prefix, skipped_in_sync)
 
 
 def _preview_exif_writes(date_map, kind):

@@ -11,11 +11,23 @@ import io
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 
 from photo_lib.binaries import EXIFTOOL
 from photo_lib.tag_modes import format_date_for_mode
+
+# Exiftool can append a "+HH:MM" or "-HH:MM" offset on naive tags (e.g. filesystem
+# dates on Windows). For "is this in sync?" comparison we strip the suffix so a
+# Windows-side "+13:00" doesn't make us think the file needs re-writing.
+_TZ_SUFFIX_RE = re.compile(r'[+-]\d{2}:\d{2}$')
+
+# Tags that get written but don't round-trip cleanly through exiftool (e.g. XMP
+# DateCreated is stored date-only in some namespaces, so reading it back never
+# matches the full HH:MM:SS we wrote). Exclude from sync checking — write them
+# unconditionally as part of the batch.
+_SYNC_CHECK_EXCLUDED_TAGS = frozenset({"DateCreated"})
 
 # Library code logs via the shared 'photo_lib' logger; callers that ran
 # configure_logging() get these messages on console + in the log file. Callers
@@ -81,6 +93,33 @@ def get_metadata_for_tags(file_paths, tags) -> list:
             return []
     finally:
         os.unlink(list_path)
+
+
+def is_metadata_in_sync(file_metadata: dict, expected_dt, file_tz, attribute_modes: dict) -> bool:
+    """Return True if every tag in ``attribute_modes`` already has the value
+    ``format_date_for_mode`` would produce for ``(expected_dt, file_tz, mode)``.
+
+    Used by Mode 1 (the EXIF writer) to skip files that are already in the desired
+    state — avoiding the unnecessary write (and mtime bump / Google Drive resync)
+    of files we've already fixed.
+
+    Conservative: any missing tag, parse failure, or value mismatch causes a False
+    return, so the caller writes. Writing when not strictly needed is harmless
+    (it's idempotent); skipping when it WAS needed would be a silent correctness bug.
+    """
+    for tag, mode in attribute_modes.items():
+        if tag in _SYNC_CHECK_EXCLUDED_TAGS:
+            continue
+        expected = format_date_for_mode(expected_dt, mode, file_tz)
+        actual = file_metadata.get(tag)
+        if actual is None:
+            return False
+        actual_str = str(actual)
+        if mode in ('utc', 'local'):
+            actual_str = _TZ_SUFFIX_RE.sub('', actual_str).strip()
+        if actual_str != expected:
+            return False
+    return True
 
 
 def write_exif_dates_batch(file_date_map, attribute_modes, error_log=None) -> None:

@@ -217,12 +217,9 @@ class TestAuditMainE2E(unittest.TestCase):
         self._seed_year(2026, [('2026-03-20 10.15.30_1.jpg', copy_fixture_image)])
         main.change_exif_date(os.path.join(self.master, '2026'))
 
-        import io
-        import contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with self.assertLogs('photo_lib', level='INFO') as cm:
             audit_master.main(master_root=self.master)
-        output = buf.getvalue()
+        output = "\n".join(r.getMessage() for r in cm.records)
         self.assertIn('2026  [OK]', output)
         self.assertNotIn('[NEEDS FIX]', output)
 
@@ -234,12 +231,9 @@ class TestAuditMainE2E(unittest.TestCase):
         os.makedirs(os.path.join(self.master, '2027'), exist_ok=True)
         copy_fixture_image(os.path.join(self.master, '2027'), '2027-06-15 11.22.33_1.jpg')
 
-        import io
-        import contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with self.assertLogs('photo_lib', level='INFO') as cm:
             audit_master.main(master_root=self.master)
-        output = buf.getvalue()
+        output = "\n".join(r.getMessage() for r in cm.records)
         self.assertIn('2027  [NEEDS FIX]', output)
 
 

@@ -9,12 +9,19 @@ or fail in confusing ways.
 import csv
 import io
 import json
+import logging
 import os
 import subprocess
 import tempfile
 
 from photo_lib.binaries import EXIFTOOL
 from photo_lib.tag_modes import format_date_for_mode
+
+# Library code logs via the shared 'photo_lib' logger; callers that ran
+# configure_logging() get these messages on console + in the log file. Callers
+# that didn't will see nothing here (the default logger has no handlers),
+# which is fine for the legacy 'just print' style.
+_logger = logging.getLogger("photo_lib")
 
 
 def get_all_metadata(file_paths) -> dict:
@@ -76,14 +83,17 @@ def get_metadata_for_tags(file_paths, tags) -> list:
         os.unlink(list_path)
 
 
-def write_exif_dates_batch(file_date_map, attribute_modes, error_log) -> None:
+def write_exif_dates_batch(file_date_map, attribute_modes, error_log=None) -> None:
     """Write date attributes for all files in a single exiftool ``-csv`` call.
 
     ``file_date_map``: dict ``file_path → (datetime, tzinfo)``. The tzinfo is the
                        photo's local timezone (detected per-file, NZ fallback).
     ``attribute_modes``: dict ``exiftool tag name → format mode`` — see
                          ``photo_lib.tag_modes.format_date_for_mode``.
-    ``error_log``: open writable file for diagnostic messages.
+    ``error_log``: deprecated. Pass nothing — diagnostics now go through the
+                   shared ``photo_lib`` logger. The parameter is kept for back-compat
+                   with old callers; if a file-like is provided, its writes are
+                   mirrored there as well.
     """
     if not file_date_map:
         return
@@ -120,9 +130,15 @@ def write_exif_dates_batch(file_date_map, attribute_modes, error_log) -> None:
             encoding='utf-8', errors='replace', timeout=600
         )
         if result.returncode != 0:
-            error_log.write(f"exiftool exit {result.returncode}: {(result.stderr or '')[:500]}\n")
+            msg = f"exiftool exit {result.returncode}: {(result.stderr or '')[:500]}"
+            _logger.warning(msg)
+            if error_log is not None:
+                error_log.write(msg + "\n")
     except subprocess.TimeoutExpired:
-        error_log.write("Timeout during batch metadata write\n")
+        msg = "Timeout during batch metadata write"
+        _logger.error(msg)
+        if error_log is not None:
+            error_log.write(msg + "\n")
     finally:
         os.unlink(csv_path)
         os.unlink(list_path)

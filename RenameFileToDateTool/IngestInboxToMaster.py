@@ -23,6 +23,7 @@ Run with ``python IngestInboxToMaster.py``.
 """
 
 import argparse
+import logging
 import os
 import shutil
 import sys
@@ -35,7 +36,10 @@ from photo_lib.config import (
     MASTER_ROOT,
 )
 from photo_lib.filename_pattern import parse_filename_year
+from photo_lib.logging_setup import configure_logging
 from photo_lib.tk_picker import choose_directory
+
+logger = logging.getLogger("photo_lib")
 
 DEFAULT_MASTER_ROOT = MASTER_ROOT
 BUNDLED_EARLY_YEARS = set(range(*BUNDLED_EARLY_YEAR_RANGE))
@@ -87,36 +91,36 @@ def summarise_plan(moves, unparseable) -> None:
     counts_by_year = defaultdict(int)
     for _, _, _, year in moves:
         counts_by_year[year] += 1
-    print()
-    print("=== Plan ===")
-    print(f"Total files to move: {len(moves)}")
+    logger.info("")
+    logger.info("=== Plan ===")
+    logger.info("Total files to move: %d", len(moves))
     for year in sorted(counts_by_year):
         folder = BUNDLED_EARLY_FOLDER if year in BUNDLED_EARLY_YEARS else str(year)
-        print(f"  {year} -> {folder}/  ({counts_by_year[year]} files)")
+        logger.info("  %d -> %s/  (%d files)", year, folder, counts_by_year[year])
     if unparseable:
-        print(f"\n{len(unparseable)} files have no parseable year and will be SKIPPED:")
+        logger.warning("%d files have no parseable year and will be SKIPPED:", len(unparseable))
         for filename in unparseable[:10]:
-            print(f"  - {filename}")
+            logger.warning("  - %s", filename)
         if len(unparseable) > 10:
-            print(f"  ... and {len(unparseable) - 10} more")
-    print()
+            logger.warning("  ... and %d more", len(unparseable) - 10)
+    logger.info("")
 
 
 def confirm_google_photos_upload(inbox_folder: str) -> bool:
-    print("=== Google Photos upload ===")
-    print("Before moving files into the master library, upload this inbox to Google")
-    print("Photos so the cloud stays in sync.")
-    print()
-    print(f"  1. Open https://photos.google.com")
-    print(f"  2. Drag the contents of {inbox_folder} into the browser window")
-    print(f"  3. Wait for the upload to finish (watch the progress indicator)")
-    print()
+    logger.info("=== Google Photos upload ===")
+    logger.info("Before moving files into the master library, upload this inbox to Google")
+    logger.info("Photos so the cloud stays in sync.")
+    logger.info("")
+    logger.info("  1. Open https://photos.google.com")
+    logger.info("  2. Drag the contents of %s into the browser window", inbox_folder)
+    logger.info("  3. Wait for the upload to finish (watch the progress indicator)")
+    logger.info("")
     while True:
         answer = input("Has the Google Photos upload finished? [y]es / [s]kip upload / [a]bort: ").strip().lower()
         if answer == 'y':
             return True
         if answer == 's':
-            print("Skipping upload step.")
+            logger.info("Skipping upload step.")
             return True
         if answer == 'a':
             return False
@@ -133,7 +137,7 @@ def execute_moves(moves) -> int:
         shutil.move(source_path, destination_path)
         moved += 1
         if moved % 50 == 0:
-            print(f"  Moved {moved}/{len(moves)}")
+            logger.info("  Moved %d/%d", moved, len(moves))
     return moved
 
 
@@ -145,7 +149,7 @@ def _resolve_path(cli_value, title, initial_dir):
     """
     if cli_value:
         if not os.path.isdir(cli_value):
-            print(f"Not a directory: {cli_value}")
+            logger.error("Not a directory: %s", cli_value)
             return None
         return cli_value
     return select_folder_dialog(title, initialdir=initial_dir)
@@ -159,7 +163,7 @@ def main(dry_run: bool = False, master_path: str | None = None,
         DEFAULT_MASTER_ROOT if os.path.isdir(DEFAULT_MASTER_ROOT) else None,
     )
     if not master_root:
-        print("No master folder selected. Exiting.")
+        logger.info("No master folder selected. Exiting.")
         return
 
     default_inbox = os.path.join(master_root, INBOX_FOLDER_NAME)
@@ -169,44 +173,44 @@ def main(dry_run: bool = False, master_path: str | None = None,
         default_inbox if os.path.isdir(default_inbox) else master_root,
     )
     if not inbox_folder:
-        print("No inbox folder selected. Exiting.")
+        logger.info("No inbox folder selected. Exiting.")
         return
 
     if os.path.abspath(inbox_folder) == os.path.abspath(master_root):
-        print("Inbox folder cannot be the master folder itself. Exiting.")
+        logger.error("Inbox folder cannot be the master folder itself. Exiting.")
         return
 
     moves, unparseable = plan_moves(inbox_folder, master_root)
     if not moves:
-        print("No files with parseable year names found in the inbox.")
+        logger.info("No files with parseable year names found in the inbox.")
         if unparseable:
-            print(f"({len(unparseable)} files were unparseable — rename them with main.py first.)")
+            logger.info("(%d files were unparseable — rename them with main.py first.)", len(unparseable))
         return
 
     summarise_plan(moves, unparseable)
 
     if dry_run:
-        print(f"[DRY-RUN] Would move {len(moves)} files. Skipping Google Photos upload "
-              "prompt and not touching disk.")
+        logger.info("[DRY-RUN] Would move %d files. Skipping Google Photos upload "
+                    "prompt and not touching disk.", len(moves))
         return
 
     if assume_yes:
-        print("--yes given: skipping Google Photos upload prompt and proceeding with moves.")
+        logger.info("--yes given: skipping Google Photos upload prompt and proceeding with moves.")
     else:
         if not confirm_google_photos_upload(inbox_folder):
-            print("Aborted before moving files. Inbox is untouched.")
+            logger.info("Aborted before moving files. Inbox is untouched.")
             return
 
         response = input(f"Move {len(moves)} files into master year folders now? [y/N]: ").strip().lower()
         if response != 'y':
-            print("Aborted before moving files. Inbox is untouched.")
+            logger.info("Aborted before moving files. Inbox is untouched.")
             return
 
-    print(f"\nMoving {len(moves)} files...")
+    logger.info("Moving %d files...", len(moves))
     moved = execute_moves(moves)
-    print(f"\nDone. {moved} files moved into master library.")
+    logger.info("Done. %d files moved into master library.", moved)
     if unparseable:
-        print(f"{len(unparseable)} unparseable files were left in the inbox.")
+        logger.info("%d unparseable files were left in the inbox.", len(unparseable))
 
 
 if __name__ == "__main__":
@@ -233,6 +237,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    configure_logging("ingest_inbox_to_master")
     try:
         main(
             dry_run=args.dry_run,
@@ -241,5 +246,5 @@ if __name__ == "__main__":
             assume_yes=args.yes,
         )
     except KeyboardInterrupt:
-        print("\nInterrupted.")
+        logger.info("Interrupted.")
         sys.exit(1)

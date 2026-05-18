@@ -24,7 +24,10 @@ import shutil
 import logging
 
 from photo_lib.extensions import is_media
+from photo_lib.logging_setup import configure_logging
 from photo_lib.tk_picker import resolve_directory
+
+logger = logging.getLogger("photo_lib")
 
 SPLIT_FOLDER_RE = re.compile(r'_\d{2}$')
 
@@ -33,8 +36,7 @@ SPLIT_FOLDER_RE = re.compile(r'_\d{2}$')
 # year2024/non_media/non_media/non_media/... until the path-length limit killed it).
 NON_MEDIA_FOLDER_NAME = 'non_media'
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Logging is configured via photo_lib.logging_setup.configure_logging() from __main__.
 
 
 def is_media_file(file_path):
@@ -48,11 +50,11 @@ def move_file(file_path, target_dir):
     try:
         if os.path.exists(file_path):  # Double-check the file exists before moving
             shutil.move(file_path, target_path)
-            logging.info(f"Moved: {file_path} -> {target_path}")
+            logger.info(f"Moved: {file_path} -> {target_path}")
         else:
-            logging.warning(f"File not found during move: {file_path}")
+            logger.warning(f"File not found during move: {file_path}")
     except Exception as e:
-        logging.error(f"Error moving file {file_path} to {target_dir}: {e}")
+        logger.error(f"Error moving file {file_path} to {target_dir}: {e}")
 
 # Function to split media files into subfolders (up to 100 files per folder)
 def split_media_files(media_files, parent_folder):
@@ -109,12 +111,12 @@ def process_folder_structure(root_folder):
                 if media_files:
                     split_media_files(media_files, subfolder_path)
 
-                logging.info(f"Processed folder: {subfolder_path}")
+                logger.info(f"Processed folder: {subfolder_path}")
 
             except FileNotFoundError:
-                logging.warning(f"Subfolder not found during processing: {subfolder_path}")
+                logger.warning(f"Subfolder not found during processing: {subfolder_path}")
             except Exception as e:
-                logging.error(f"Error processing subfolder {subfolder_path}: {e}")
+                logger.error(f"Error processing subfolder {subfolder_path}: {e}")
 
 
 def main():
@@ -122,21 +124,22 @@ def main():
     parser.add_argument("--path", help="Root folder to organize. If omitted, opens the Tk folder picker.")
     args = parser.parse_args()
 
+    configure_logging("split_media_into_folders")
     root_folder = resolve_directory(args.path, "Select the root folder to organize")
     if not root_folder:
-        logging.warning("No folder selected. Exiting program.")
+        logger.warning("No folder selected. Exiting program.")
         return
 
     if not os.path.exists(root_folder):
-        logging.error(f"Selected folder does not exist: {root_folder}")
+        logger.error(f"Selected folder does not exist: {root_folder}")
         return
 
     try:
-        logging.info(f"Selected folder: {root_folder}")
+        logger.info(f"Selected folder: {root_folder}")
         process_folder_structure(root_folder)
-        logging.info("Processing completed.")
+        logger.info("Processing completed.")
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
 
 if __name__ == "__main__":
     main()

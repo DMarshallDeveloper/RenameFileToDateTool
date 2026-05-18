@@ -25,6 +25,7 @@ Two subtleties the audit knows about (matching the writer's behavior):
 Run with ``python audit_master.py``. Edit ``photo_lib/config.py`` (set
 ``MASTER_ROOT``) if your master library lives elsewhere.
 """
+import logging
 import os
 import re
 import sys
@@ -42,8 +43,11 @@ from photo_lib.filename_pattern import (
     FILENAME_PARTS_RE,
     apply_placeholder_time_bump,
 )
+from photo_lib.logging_setup import configure_logging
 from photo_lib.tag_modes import IMAGE_TAG_MODES, VIDEO_TAG_MODES, FILESYSTEM_TAGS
 from photo_lib.timezone_detection import LOCAL_TIMEZONE, detect_file_tz
+
+logger = logging.getLogger("photo_lib")
 
 LOCAL_TZ = LOCAL_TIMEZONE  # back-compat alias for older test imports
 
@@ -177,7 +181,7 @@ def main(master_root: str = MASTER_ROOT):
             samples_by_year_ext[(year, ext)] = items[:SAMPLES_PER_TYPE]
 
     all_paths = [p for items in samples_by_year_ext.values() for (_, p) in items]
-    print(f"Reading metadata for {len(all_paths)} sample files...")
+    logger.info("Reading metadata for %d sample files...", len(all_paths))
 
     all_tags = (IMAGE_LOCAL_TAGS + VIDEO_UTC_TAGS + VIDEO_TZ_TAGS
                 + FILESYSTEM_TAGS + TZ_HINT_TAGS)
@@ -220,10 +224,10 @@ def main(master_root: str = MASTER_ROOT):
                     (ext, first_mismatch_example[0], first_mismatch_example[1])
                 )
 
-    print()
-    print("=" * 72)
-    print("PER-FOLDER VERDICT")
-    print("=" * 72)
+    logger.info("")
+    logger.info("=" * 72)
+    logger.info("PER-FOLDER VERDICT")
+    logger.info("=" * 72)
     needs_fix = []
     clean = []
     for year in year_folders:
@@ -232,28 +236,29 @@ def main(master_root: str = MASTER_ROOT):
             continue
         if v["types_bad"]:
             needs_fix.append(year)
-            print(f"\n{year}  [NEEDS FIX]")
-            print(f"  Clean: {', '.join(v['types_ok']) or '(none)'}")
-            print(f"  Bad:   {', '.join(v['types_bad'])}")
+            logger.warning("%s  [NEEDS FIX]", year)
+            logger.warning("  Clean: %s", ', '.join(v['types_ok']) or '(none)')
+            logger.warning("  Bad:   %s", ', '.join(v['types_bad']))
             for ext, ex_name, mismatches in v["examples"][:1]:
-                print(f"  Example .{ext}: {ex_name}")
+                logger.warning("  Example .%s: %s", ext, ex_name)
                 for tag, expected, actual, _ok in mismatches[:6]:
-                    print(f"    {tag}: expected {expected!r}, got {actual!r}")
+                    logger.warning("    %s: expected %r, got %r", tag, expected, actual)
         else:
             clean.append(year)
-            print(f"\n{year}  [OK]  ({', '.join(v['types_ok'])})")
+            logger.info("%s  [OK]  (%s)", year, ', '.join(v['types_ok']))
 
-    print()
-    print("=" * 72)
-    print("SUMMARY")
-    print("=" * 72)
-    print(f"Folders to run main.py option 1 on: {len(needs_fix)}")
+    logger.info("")
+    logger.info("=" * 72)
+    logger.info("SUMMARY")
+    logger.info("=" * 72)
+    logger.info("Folders to run main.py option 1 on: %d", len(needs_fix))
     for y in needs_fix:
-        print(f"  - {y}")
-    print(f"\nFolders already correct: {len(clean)}")
+        logger.info("  - %s", y)
+    logger.info("Folders already correct: %d", len(clean))
     for y in clean:
-        print(f"  - {y}")
+        logger.info("  - %s", y)
 
 
 if __name__ == "__main__":
+    configure_logging("audit_master")
     main()

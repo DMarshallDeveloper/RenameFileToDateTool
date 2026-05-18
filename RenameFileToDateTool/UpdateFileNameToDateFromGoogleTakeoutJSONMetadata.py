@@ -28,42 +28,28 @@ library's ``_Inbox`` for ingestion via ``IngestInboxToMaster.py``.
 
 import bisect
 import json
+import logging
 import os
 import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 
 from photo_lib.extensions import MEDIA_EXTENSIONS as _MEDIA_EXT_SET
+from photo_lib.logging_setup import configure_logging
 from photo_lib.takeout_geo import (
     DEFAULT_TIMEZONE as NEW_ZEALAND_TIMEZONE,  # back-compat alias for tests
     local_datetime_from_metadata,
     resolve_timezone_from_geo,
 )
-from photo_lib.tk_picker import choose_directory, resolve_directory
+from photo_lib.tk_picker import resolve_directory
+
+logger = logging.getLogger("photo_lib")
 
 # The regex needs a pipe-separated string of extensions (case-insensitive matching).
 MEDIA_EXTENSIONS = "|".join(sorted(_MEDIA_EXT_SET))
 
 DUPLICATE_SUFFIX_RE = re.compile(r"(?:\((\d+)\)|_(\d+))$", re.IGNORECASE)
 REAL_EXTENSION_RE = re.compile(rf"^(.*?\.({MEDIA_EXTENSIONS}))", re.IGNORECASE)
-
-
-# Back-compat wrapper retained because callers used to pass a separate ``title``
-# argument; the new tk_picker takes the title positionally.
-def select_folder_dialog(title: str) -> str | None:
-    return choose_directory(title)
-
-
-def select_folder_dialog(title: str) -> str | None:
-    """Open a folder-selection dialog and return the selected path (or None)."""
-    root = Tk()
-    root.withdraw()
-    selected_folder = filedialog.askdirectory(title=title)
-    if selected_folder:
-        print(f"Selected folder: {selected_folder}")
-    else:
-        print("No folder selected.")
-    return selected_folder
 
 
 def generate_unique_filename(output_folder: str, base_name: str, extension: str, planned_names: set) -> str:
@@ -102,7 +88,7 @@ def infer_media_filename_from_json(json_filename: str) -> str | None:
         root, ext = os.path.splitext(media_part)
         media_part = f"{root}{duplicate_token}{ext}"
 
-    print(f"Best guess at file name: {media_part}")
+    logger.debug("Best guess at file name: %s", media_part)
     return media_part
 
 
@@ -169,7 +155,7 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
     When dry_run is True, only prints what would be done.
     """
     if not source_folder or not destination_folder:
-        print("Source or destination folder not selected.")
+        logger.error("Source or destination folder not selected.")
         return
 
     os.makedirs(destination_folder, exist_ok=True)
@@ -192,14 +178,14 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
 
     for metadata_filename in metadata_json_filenames:
         json_file_path = os.path.join(source_folder, metadata_filename)
-        print(f"Processing JSON file: {metadata_filename}")
+        logger.debug("Processing JSON file: %s", metadata_filename)
 
         try:
             with open(json_file_path, "r") as json_file:
                 metadata = json.load(json_file)
 
             if "photoTakenTime" not in metadata:
-                print(f"No 'photoTakenTime' found in {metadata_filename}")
+                logger.warning("No 'photoTakenTime' found in %s", metadata_filename)
                 unmatched_json_file_list.append(metadata_filename)
                 match_report[metadata_filename] = (None, "no_timestamp")
                 continue
@@ -218,10 +204,12 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
                 destination_media_path = os.path.join(destination_folder, unique_new_filename)
 
                 if dry_run:
-                    print(f"[DRY RUN] Would copy: {matched_media_filename} -> {unique_new_filename} (method: {method_used})")
+                    logger.info("[DRY RUN] Would copy: %s -> %s (method: %s)",
+                                matched_media_filename, unique_new_filename, method_used)
                 else:
                     copy_ops.append((source_media_path, destination_media_path))
-                    print(f"Matched: {matched_media_filename} -> {unique_new_filename} (method: {method_used})")
+                    logger.info("Matched: %s -> %s (method: %s)",
+                                matched_media_filename, unique_new_filename, method_used)
 
                 matched_media_files.add(matched_media_filename)
                 unmatched_media_file_set.discard(matched_media_filename)
@@ -229,12 +217,12 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
                 base_name_to_datetime[os.path.splitext(matched_media_filename)[0].lower()] = local_datetime
 
             else:
-                print(f"No matching media file found for {metadata_filename}")
+                logger.warning("No matching media file found for %s", metadata_filename)
                 unmatched_json_file_list.append(metadata_filename)
                 match_report[metadata_filename] = (None, "no_match")
 
         except Exception as error:
-            print(f"Error processing {metadata_filename}: {error}")
+            logger.error("Error processing %s: %s", metadata_filename, error)
             unmatched_json_file_list.append(metadata_filename)
             match_report[metadata_filename] = (None, f"error: {error}")
 
@@ -251,60 +239,63 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
             source_media_path = os.path.join(source_folder, media_filename)
             destination_media_path = os.path.join(destination_folder, unique_new_filename)
             if dry_run:
-                print(f"[DRY RUN] Would copy: {media_filename} -> {unique_new_filename} (method: live_photo_pairing)")
+                logger.info("[DRY RUN] Would copy: %s -> %s (method: live_photo_pairing)",
+                            media_filename, unique_new_filename)
             else:
                 copy_ops.append((source_media_path, destination_media_path))
-                print(f"Matched: {media_filename} -> {unique_new_filename} (method: live_photo_pairing)")
+                logger.info("Matched: %s -> %s (method: live_photo_pairing)",
+                            media_filename, unique_new_filename)
             matched_media_files.add(media_filename)
             unmatched_media_file_set.discard(media_filename)
             match_report[media_filename] = (media_filename, "live_photo_pairing")
             live_photo_matched += 1
 
     if live_photo_matched:
-        print(f"Live Photo pairing matched {live_photo_matched} additional media files.")
+        logger.info("Live Photo pairing matched %d additional media files.", live_photo_matched)
 
     # Execute all copies in parallel
     if copy_ops:
-        print(f"\nCopying {len(copy_ops)} files...")
+        logger.info("Copying %d files...", len(copy_ops))
 
         def copy_file(op):
             src, dst = op
             try:
                 shutil.copy2(src, dst)
             except Exception as e:
-                print(f"Error copying {os.path.basename(src)}: {e}")
+                logger.error("Error copying %s: %s", os.path.basename(src), e)
 
         with ThreadPoolExecutor(max_workers=8) as executor:
             executor.map(copy_file, copy_ops)
 
-        print("All copies complete.")
+        logger.info("All copies complete.")
 
     report_path = os.path.join(destination_folder, "match_report.json")
     with open(report_path, "w") as report_file:
         json.dump(match_report, report_file, indent=2)
-    print(f"Match report written to: {report_path}")
+    logger.info("Match report written to: %s", report_path)
 
     if unmatched_json_file_list:
         log_path = os.path.join(destination_folder, "unmatched_json_files.txt")
         with open(log_path, "w") as log_file:
             for filename in unmatched_json_file_list:
                 log_file.write(filename + "\n")
-        print(f"Logged {len(unmatched_json_file_list)} unmatched JSON files to: {log_path}")
+        logger.info("Logged %d unmatched JSON files to: %s", len(unmatched_json_file_list), log_path)
 
     if unmatched_media_file_set:
         log_path = os.path.join(destination_folder, "unmatched_media_files.txt")
         with open(log_path, "w") as log_file:
             for filename in unmatched_media_file_set:
                 log_file.write(filename + "\n")
-        print(f"Logged {len(unmatched_media_file_set)} unmatched media files to: {log_path}")
+        logger.info("Logged %d unmatched media files to: %s", len(unmatched_media_file_set), log_path)
     else:
-        print("All media files had matching metadata.")
+        logger.info("All media files had matching metadata.")
 
     total_processed = len(metadata_json_filenames)
     total_matched = len(matched_media_files)
-    print(f"Summary: processed {total_processed} JSON metadata files, matched {total_matched} media files.")
+    logger.info("Summary: processed %d JSON metadata files, matched %d media files.",
+                total_processed, total_matched)
     if dry_run:
-        print("Note: dry-run mode - no files were actually copied.")
+        logger.info("Note: dry-run mode - no files were actually copied.")
 
 
 if __name__ == "__main__":
@@ -329,16 +320,18 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    configure_logging("takeout_json_to_filename")
+
     if not args.src:
-        print("Select the folder containing Google Photos files (including JSONs).")
+        logger.info("Select the folder containing Google Photos files (including JSONs).")
     source_folder_selected = resolve_directory(args.src, "Select Source Folder")
 
     if not args.dst:
-        print("Select the destination folder where renamed files will be saved.")
+        logger.info("Select the destination folder where renamed files will be saved.")
     destination_folder_selected = resolve_directory(args.dst, "Select Destination Folder", must_exist=False)
 
     if source_folder_selected and destination_folder_selected:
         process_and_copy_media_files(source_folder_selected, destination_folder_selected, dry_run=args.dry_run)
-        print("File copying and renaming completed successfully!")
+        logger.info("File copying and renaming completed successfully!")
     else:
-        print("Operation canceled.")
+        logger.info("Operation canceled.")

@@ -18,6 +18,7 @@ Run with ``python ChangeDatesFromFileName.py``.
 """
 
 import argparse
+import logging
 import os
 
 from photo_lib.exiftool_runner import get_all_metadata, write_exif_dates_batch
@@ -26,9 +27,12 @@ from photo_lib.filename_pattern import (
     apply_placeholder_time_bump,
     parse_filename_datetime,
 )
+from photo_lib.logging_setup import configure_logging
 from photo_lib.tag_modes import IMAGE_TAG_MODES, VIDEO_TAG_MODES
 from photo_lib.timezone_detection import LOCAL_TIMEZONE, detect_file_tz
 from photo_lib.tk_picker import choose_directory, resolve_directory
+
+logger = logging.getLogger("photo_lib")
 
 
 # Back-compat alias: extract_date_from_filename used to live here; tests still import it.
@@ -45,7 +49,7 @@ def change_exif_date(directory: str, dry_run: bool = False):
     (image/video) without invoking exiftool.
     """
     if not directory:
-        print("No directory selected. Exiting.")
+        logger.info("No directory selected. Exiting.")
         return
 
     # Collect all candidate files first so we can fetch their existing EXIF in one batch
@@ -62,58 +66,51 @@ def change_exif_date(directory: str, dry_run: bool = False):
             candidates.append((file_path, file, date_time, ext))
 
     file_paths = [c[0] for c in candidates]
-    print(f"Reading existing EXIF for {len(file_paths)} files...")
+    logger.info("Reading existing EXIF for %d files...", len(file_paths))
     metadata_by_name = get_all_metadata(file_paths)
 
     image_file_date_map = {}
     video_file_date_map = {}
     prefix = "[DRY-RUN] " if dry_run else ""
 
-    # Runtime logs live in a sibling logs/ folder (gitignored).
-    logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-    log_path = os.path.join(logs_dir, "logging_file.txt")
-    with open(log_path, 'w', encoding='utf-8') as logging_file:
-        for file_path, filename, date_time, ext in candidates:
-            md = metadata_by_name.get(filename, {})
-            date_time = apply_placeholder_time_bump(filename, date_time)
-            file_tz = detect_file_tz(md, default_tz=LOCAL_TIMEZONE)
+    for file_path, filename, date_time, ext in candidates:
+        md = metadata_by_name.get(filename, {})
+        date_time = apply_placeholder_time_bump(filename, date_time)
+        file_tz = detect_file_tz(md, default_tz=LOCAL_TIMEZONE)
 
-            if is_image(ext):
-                image_file_date_map[file_path] = (date_time, file_tz)
-            elif is_video(ext):
-                video_file_date_map[file_path] = (date_time, file_tz)
+        if is_image(ext):
+            image_file_date_map[file_path] = (date_time, file_tz)
+        elif is_video(ext):
+            video_file_date_map[file_path] = (date_time, file_tz)
 
-        if dry_run:
-            _preview_exif_writes(image_file_date_map, "image")
-            _preview_exif_writes(video_file_date_map, "video")
-        else:
-            if image_file_date_map:
-                print(f"Writing metadata for {len(image_file_date_map)} image files...")
-                write_exif_dates_batch(image_file_date_map, IMAGE_TAG_MODES, logging_file)
+    if dry_run:
+        _preview_exif_writes(image_file_date_map, "image")
+        _preview_exif_writes(video_file_date_map, "video")
+    else:
+        if image_file_date_map:
+            logger.info("Writing metadata for %d image files...", len(image_file_date_map))
+            write_exif_dates_batch(image_file_date_map, IMAGE_TAG_MODES)
 
-            if video_file_date_map:
-                print(f"Writing metadata for {len(video_file_date_map)} video files...")
-                write_exif_dates_batch(video_file_date_map, VIDEO_TAG_MODES, logging_file)
+        if video_file_date_map:
+            logger.info("Writing metadata for %d video files...", len(video_file_date_map))
+            write_exif_dates_batch(video_file_date_map, VIDEO_TAG_MODES)
 
-        total = len(image_file_date_map) + len(video_file_date_map)
-        verb = "would be updated" if dry_run else "have been updated"
-        if not dry_run:
-            logging_file.write(f"{total} files have been updated.\n")
-        print(f"{prefix}{total} files {verb}.")
+    total = len(image_file_date_map) + len(video_file_date_map)
+    verb = "would be updated" if dry_run else "have been updated"
+    logger.info("%s%d files %s.", prefix, total, verb)
 
 
 def _preview_exif_writes(date_map, kind):
-    """Print the planned EXIF writes for dry-run mode. Shows the first 10 entries
+    """Log the planned EXIF writes for dry-run mode. Shows the first 10 entries
     and a count of any remainder."""
     if not date_map:
         return
-    print(f"[DRY-RUN] Would write metadata for {len(date_map)} {kind} files:")
+    logger.info("[DRY-RUN] Would write metadata for %d %s files:", len(date_map), kind)
     for i, (path, (dt, file_tz)) in enumerate(date_map.items()):
         if i >= 10:
-            print(f"  ... and {len(date_map) - 10} more")
+            logger.info("  ... and %d more", len(date_map) - 10)
             break
-        print(f"  {os.path.relpath(path)}: dt={dt.isoformat()} tz={file_tz}")
+        logger.info("  %s: dt=%s tz=%s", os.path.relpath(path), dt.isoformat(), file_tz)
 
 
 if __name__ == "__main__":
@@ -130,5 +127,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    configure_logging("change_dates_from_filename")
     directory = resolve_directory(args.path, "Select Photos Directory")
     change_exif_date(directory, dry_run=args.dry_run)

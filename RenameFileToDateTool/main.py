@@ -28,11 +28,13 @@ Where to read next:
 """
 
 import argparse
+import logging
 import os
 from datetime import datetime
 
 from photo_lib.binaries import EXIFTOOL  # re-exported for back-compat below
 from photo_lib.exiftool_runner import get_all_metadata, write_exif_dates_batch
+from photo_lib.logging_setup import configure_logging
 from photo_lib.extensions import (
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
@@ -59,6 +61,8 @@ from photo_lib.timezone_detection import (
     parse_tz_offset,
 )
 from photo_lib.tk_picker import choose_directory, resolve_directory
+
+logger = logging.getLogger("photo_lib")
 
 # Back-compat aliases — older tests and external callers reach for these names.
 EXE = EXIFTOOL
@@ -123,12 +127,12 @@ def rename_photos(directory, dry_run: bool = False):
     With ``dry_run=True``, prints the planned renames without touching disk.
     """
     if not directory:
-        print("No directory selected. Exiting.")
+        logger.info("No directory selected. Exiting.")
         return
 
     files = sorted(f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f)))
     if not files:
-        print("No files found.")
+        logger.info("No files found.")
         return
 
     # Read all metadata in one exiftool call rather than spawning N subprocesses.
@@ -148,7 +152,7 @@ def rename_photos(directory, dry_run: bool = False):
         date_time = extract_best_date(file_metadata, file_path)
 
         if not date_time:
-            print(f"Unable to extract date from {file}. Skipping.")
+            logger.warning("Unable to extract date from %s. Skipping.", file)
             continue
 
         new_file_name_base = date_time.strftime('%Y-%m-%d %H.%M.%S')
@@ -164,7 +168,7 @@ def rename_photos(directory, dry_run: bool = False):
                 break
             if new_file_name not in existing_names:
                 if dry_run:
-                    print(f"{prefix}{file} -> {new_file_name}")
+                    logger.info("%s%s -> %s", prefix, file, new_file_name)
                 else:
                     new_path = os.path.join(directory, new_file_name)
                     os.rename(file_path, new_path)
@@ -175,10 +179,10 @@ def rename_photos(directory, dry_run: bool = False):
             counter += 1
 
         if files_renamed_count and files_renamed_count % 50 == 0:
-            print('Files renamed:', files_renamed_count)
+            logger.info("Files renamed: %d", files_renamed_count)
 
     verb = "would be renamed" if dry_run else "have been renamed"
-    print(f"{prefix}{files_renamed_count} files {verb}.")
+    logger.info("%s%d files %s.", prefix, files_renamed_count, verb)
 
 
 def change_exif_date(directory: str, dry_run: bool = False):
@@ -193,7 +197,7 @@ def change_exif_date(directory: str, dry_run: bool = False):
     With ``dry_run=True``, summarizes the planned writes without invoking exiftool.
     """
     if not directory:
-        print("No directory selected. Exiting.")
+        logger.info("No directory selected. Exiting.")
         return
 
     files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
@@ -204,62 +208,56 @@ def change_exif_date(directory: str, dry_run: bool = False):
     video_file_date_map = {}
     prefix = "[DRY-RUN] " if dry_run else ""
 
-    # Runtime logs live in a sibling logs/ folder (gitignored) so they don't clutter
-    # the script directory or get committed.
-    logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-    log_path = os.path.join(logs_dir, "error_log.txt")
-    with open(log_path, 'w', encoding='utf-8') as error_log:
-        for file in files:
-            file_path = os.path.join(directory, file)
-            file_metadata = metadata_by_name.get(file, {})
+    for file in files:
+        file_path = os.path.join(directory, file)
+        file_metadata = metadata_by_name.get(file, {})
 
-            date_time = parse_filename_datetime(file)
-            if date_time is None:
-                print(f"Error parsing datetime from filename: {file}. Skipping.")
-                continue
+        date_time = parse_filename_datetime(file)
+        if date_time is None:
+            logger.warning("Error parsing datetime from filename: %s. Skipping.", file)
+            continue
 
-            # Bump placeholder Jan-1-midnight dates to 1pm to avoid Dec-31-previous-year
-            # rollover in UTC-respecting viewers.
-            date_time = apply_placeholder_time_bump(file, date_time)
-            file_tz = detect_file_tz(file_metadata, default_tz=LOCAL_TIMEZONE)
+        # Bump placeholder Jan-1-midnight dates to 1pm to avoid Dec-31-previous-year
+        # rollover in UTC-respecting viewers.
+        date_time = apply_placeholder_time_bump(file, date_time)
+        file_tz = detect_file_tz(file_metadata, default_tz=LOCAL_TIMEZONE)
 
-            ext = normalize_extension(file_metadata.get("FileTypeExtension", ""))
-            if is_image(ext):
-                image_file_date_map[file_path] = (date_time, file_tz)
-            elif is_video(ext):
-                video_file_date_map[file_path] = (date_time, file_tz)
-            else:
-                print(f"Invalid file type: {file}. Skipping.")
-
-        if dry_run:
-            _preview_exif_writes(image_file_date_map, "image")
-            _preview_exif_writes(video_file_date_map, "video")
+        ext = normalize_extension(file_metadata.get("FileTypeExtension", ""))
+        if is_image(ext):
+            image_file_date_map[file_path] = (date_time, file_tz)
+        elif is_video(ext):
+            video_file_date_map[file_path] = (date_time, file_tz)
         else:
-            if image_file_date_map:
-                print(f"Writing metadata for {len(image_file_date_map)} image files...")
-                write_exif_dates_batch(image_file_date_map, IMAGE_TAG_MODES, error_log)
+            logger.warning("Invalid file type: %s. Skipping.", file)
 
-            if video_file_date_map:
-                print(f"Writing metadata for {len(video_file_date_map)} video files...")
-                write_exif_dates_batch(video_file_date_map, VIDEO_TAG_MODES, error_log)
+    if dry_run:
+        _preview_exif_writes(image_file_date_map, "image")
+        _preview_exif_writes(video_file_date_map, "video")
+    else:
+        if image_file_date_map:
+            logger.info("Writing metadata for %d image files...", len(image_file_date_map))
+            write_exif_dates_batch(image_file_date_map, IMAGE_TAG_MODES)
+
+        if video_file_date_map:
+            logger.info("Writing metadata for %d video files...", len(video_file_date_map))
+            write_exif_dates_batch(video_file_date_map, VIDEO_TAG_MODES)
 
     total = len(image_file_date_map) + len(video_file_date_map)
     verb = "would be updated" if dry_run else "have been updated"
-    print(f"{prefix}{total} files {verb}.")
+    logger.info("%s%d files %s.", prefix, total, verb)
 
 
 def _preview_exif_writes(date_map, kind):
-    """Print the planned EXIF writes for dry-run mode. Shows the first 10 entries
+    """Log the planned EXIF writes for dry-run mode. Shows the first 10 entries
     and a count of any remainder."""
     if not date_map:
         return
-    print(f"[DRY-RUN] Would write metadata for {len(date_map)} {kind} files:")
+    logger.info("[DRY-RUN] Would write metadata for %d %s files:", len(date_map), kind)
     for i, (path, (dt, file_tz)) in enumerate(date_map.items()):
         if i >= 10:
-            print(f"  ... and {len(date_map) - 10} more")
+            logger.info("  ... and %d more", len(date_map) - 10)
             break
-        print(f"  {os.path.basename(path)}: dt={dt.isoformat()} tz={file_tz}")
+        logger.info("  %s: dt=%s tz=%s", os.path.basename(path), dt.isoformat(), file_tz)
 
 
 if __name__ == "__main__":
@@ -281,6 +279,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    configure_logging("main")
     directory = resolve_directory(args.path, "Select Photos Directory")
     if args.mode is not None:
         editing_exif_not_name = args.mode

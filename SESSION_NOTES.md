@@ -340,6 +340,58 @@ Tests: +14. 286 → 300 passing. Coverage includes: cross-date mark across two a
 
 **The earlier session-notes workflow step 6 ("Manual review: open each year folder, name-sort, delete unwanted") still works** — but the user can now compare cross-date pairs side-by-side in ONE folder rather than tabbing between year folders to figure out which date is the true one.
 
+### 19. Hand-run synth validation of the cross-date workflow
+
+Before committing to the production library run, built a 4-file synthetic library to exercise the new code end-to-end on real disk operations (the unit tests cover the planner functions but not the live `os.rename` + `os.makedirs` paths).
+
+**Synth design** (`%TEMP%\synth_setup.py`, not committed per the no-scratch rule):
+- 3 sources each with a pixel-identical "blue" JPEG at different timestamps + folders (2014, 2015, 2005-in-bundled-early).
+- Tier-2 grouping (same pixels, different bytes via varying JPEG `comment=` length) — the master's 2014 file gets a 4096-byte comment so it wins the size-tiebreak, forcing 2015 and 2005 to become losers.
+- 1 singleton with a different structured pattern, kept in master only.
+
+**Pipeline run** through `combine_libraries → find_duplicate_photos scan / report / mark / finalize`:
+- Report flagged the cross-date group with the new badge.
+- Mark consolidated all 3 dupes into `2014\` with `__from_<base>` markers on the two losers (visible in the dry-run + live output thanks to the new relpath logging).
+- Finalize (multi-survivor: kept all 3) split them back home — `_b` to `2015\`, `_c` correctly to `2000 - 2010\` via the BUNDLED_EARLY routing.
+
+End state matched the start state exactly. Round-trip identity confirmed.
+
+### 20. Clearer cross-folder logs in mark/finalize (commit `92355c3`)
+
+Caught during the synth run: the basename-only log lines hid the destination folder for cross-folder moves. Both `mark` and `finalize` now:
+- Count cross-folder entries in the header line (`X files would be renamed across N groups (Y cross-folder)`).
+- Switch each affected line to a relpath so the destination year folder is visible.
+- For finalize: replaced "X lone-survivor files would have their suffix stripped" with "X marked files would be returned to canonical form" — the old message was inaccurate now that finalize also handles multi-survivor + cross-date returns.
+
+### 21. Property-based integration tests for the multi-script pipeline (commit `2112dcc`)
+
+Surveyed test coverage and found a gap: per-script tests existed but no test chained `combine → normalize → scan → mark → finalize` together. Both the case-insensitive collision bug (§15) and the cross-date data-loss issue (§18) were caught by hand on the pilot — not by the test suite.
+
+**New file**: `tests/test_integration_pipeline.py` (~270 lines).
+
+**Approach** — hypothesis with a small DSL:
+- `LibrarySpec` / `SourceSpec` / `FileSpec` dataclasses describe a synth library declaratively.
+- `materialize(spec, root)` writes the spec to disk as real JPEGs (PIL, structured patterns keyed by `content_id` so duplicates are deterministic and pHash-distinct images stay distinct).
+- `run_pipeline(spec, work_root)` drives combine → normalize → scan → mark → finalize.
+- Hypothesis strategies generate bounded random specs: 1-3 sources × 1-6 files each, content drawn from a pool of 4 distinct images, random `(year, month, day, time)`, randomised `.jpg`/`.JPG` casing.
+
+**Four invariants** asserted per random case:
+1. **No unique pixel content lost**: pixel-SHA256 set of inputs == pixel-SHA256 set of outputs (manual review skipped, so the equality must hold strictly).
+2. **All filenames canonical**: every final filename matches `CANONICAL_FILENAME_RE` (no `_a`/`_b`/`_c` or `__from_` residue).
+3. **Year-folder placement**: every file's parent folder matches its filename year (with `BUNDLED_EARLY_FOLDER` for years 2000-2010).
+4. **Idempotent**: a second `mark + finalize` pass lands at the same file layout.
+
+**Runtime**: 4 tests × 25 examples = 100 random pipeline runs in 11s. Suite: 300 → 304 tests, total time 44s → 57s.
+
+**Coverage gain**: randomised extension casing exercises `.JPG/.jpg` collisions; randomised year spreads exercise cross-folder dedup paths. Either bug would have been caught by the new tests if they'd existed earlier.
+
+**Limitations** (intentional, documented in the test file's docstring):
+- No simulation of manual-review deletions (would need to encode "what's safe to delete" inside the test).
+- No video coverage (strategy only generates `.jpg`; videos would need fixture clips).
+- Dedup-pipeline only — other multi-script flows (ingest, takeout, compare) aren't covered. Could add a similar file later.
+
+**Dependency added**: `hypothesis>=6,<7` in `requirements.txt`.
+
 ---
 
 ## Workflow once pilot is validated

@@ -120,6 +120,25 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(first_scan, 1)
         self.assertEqual(second_scan, 0)  # cache hit
 
+    def test_scan_idempotent_across_separator_forms(self):
+        # Same library, two scan calls with different separator forms for
+        # the root: the second call must hit the cache, not re-hash. Before
+        # the path-normalisation fix, the second call stored a parallel set
+        # of rows under the alt-separator keys and the planner saw every
+        # file as its own duplicate.
+        _write_solid_jpg(
+            self.year_dir, "2026-04-12 09.15.30_1.jpg",
+            color=(200, 50, 50),
+        )
+        # First scan with whatever os.path produces.
+        first = find_duplicate_photos.scan(self.tmpdir)
+        # Second scan with separators swapped (works on Windows; on POSIX
+        # the input is already normalised so this still passes as a no-op).
+        alt = self.tmpdir.replace(os.sep, "/" if os.sep == "\\" else os.sep)
+        second = find_duplicate_photos.scan(alt)
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)  # cache hit, no new rows
+
 
 if __name__ == '__main__':
     unittest.main()

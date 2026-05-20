@@ -54,6 +54,11 @@ logger = logging.getLogger("photo_lib")
 
 
 def iter_media_paths(root: str):
+    # Canonicalise the root before walking so the resulting paths always
+    # have OS-default separators. Otherwise a caller passing "F:/..." would
+    # produce cache keys that differ from a later "F:\\..." call for the
+    # same file (Windows filesystem ignores the difference; SQLite does not).
+    root = os.path.normpath(root)
     for current_dir, _subdirs, filenames in os.walk(root):
         for name in filenames:
             extension = normalize_extension(os.path.splitext(name)[1])

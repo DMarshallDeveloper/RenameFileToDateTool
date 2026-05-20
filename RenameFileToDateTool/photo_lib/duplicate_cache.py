@@ -21,6 +21,25 @@ from photo_lib.duplicate_finder import FileFingerprint
 DEFAULT_CACHE_FILENAME = ".photo_hashes.db"
 
 
+def _canonical_cache_key(path: str) -> str:
+    """Cache-key form of ``path`` — separators collapsed to the OS default.
+
+    Windows treats ``F:/foo`` and ``F:\\foo`` as the same file on NTFS, but
+    SQLite treats them as distinct primary keys. If the same library gets
+    scanned twice with different root-path forms (e.g. once with a
+    forward-slash CLI arg, once with a backslash one), each file accumulates
+    two cache rows and the duplicate planner reports every file as a
+    self-duplicate. Normalising at the cache boundary keeps the key stable
+    regardless of how the caller spelled the path.
+
+    Case is intentionally NOT normalised — the on-disk case is preserved so
+    e.g. ``2014-06-15 10.00.00_1.HEIC`` stays distinct from a separately-cased
+    sibling if the user has rare mixed-case files. (NTFS case-insensitivity
+    is handled elsewhere in the codebase.)
+    """
+    return os.path.normpath(path)
+
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS fingerprints (
     path                TEXT PRIMARY KEY,
@@ -78,6 +97,7 @@ class FingerprintCache:
     def lookup(self, path: str, size: int, mtime: float) -> FileFingerprint | None:
         """Return a cached fingerprint iff its stored size+mtime match the
         current file (so stale entries don't get returned)."""
+        path = _canonical_cache_key(path)
         with closing(self._connection.cursor()) as cursor:
             cursor.execute(
                 f"SELECT {self._SELECT_COLUMNS} FROM fingerprints WHERE path = ?",
@@ -103,7 +123,7 @@ class FingerprintCache:
                 " phash_hex, frame_phashes_json, width, height) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    fingerprint.path,
+                    _canonical_cache_key(fingerprint.path),
                     fingerprint.size,
                     fingerprint.mtime,
                     fingerprint.media_kind,
@@ -126,6 +146,7 @@ class FingerprintCache:
         return [self._row_to_fingerprint(row) for row in rows]
 
     def forget(self, path: str) -> None:
+        path = _canonical_cache_key(path)
         with closing(self._connection.cursor()) as cursor:
             cursor.execute("DELETE FROM fingerprints WHERE path = ?", (path,))
         self._connection.commit()
@@ -142,6 +163,8 @@ class FingerprintCache:
         in the cache, or if new_path was already occupied — in which case the
         caller probably has a worse bug).
         """
+        old_path = _canonical_cache_key(old_path)
+        new_path = _canonical_cache_key(new_path)
         with closing(self._connection.cursor()) as cursor:
             cursor.execute(
                 "UPDATE fingerprints SET path = ? WHERE path = ?",
@@ -153,4 +176,4 @@ class FingerprintCache:
 
 
 def default_cache_path(library_root: str) -> str:
-    return os.path.join(library_root, DEFAULT_CACHE_FILENAME)
+    return os.path.normpath(os.path.join(library_root, DEFAULT_CACHE_FILENAME))

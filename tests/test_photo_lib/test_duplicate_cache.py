@@ -34,7 +34,9 @@ class TestFingerprintCache(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             db_path = os.path.join(folder, "cache.db")
             with FingerprintCache(db_path) as cache:
-                stored = _image_fp("/lib/a.jpg")
+                # Use normpath at construction so the test passes on both
+                # Windows (which converts / to \) and POSIX (no-op).
+                stored = _image_fp(os.path.normpath("/lib/a.jpg"))
                 cache.store(stored)
                 got = cache.lookup("/lib/a.jpg", stored.size, stored.mtime)
             self.assertEqual(got, stored)
@@ -75,8 +77,13 @@ class TestFingerprintCache(unittest.TestCase):
                 cache.store(_image_fp("/lib/b.jpg"))
                 cache.store(_video_fp("/lib/clip.mov"))
                 all_fingerprints = cache.all_fingerprints()
+            # Paths come back in canonical form (separators normalised), so
+            # construct the expected set the same way.
             paths = {fp.path for fp in all_fingerprints}
-            self.assertEqual(paths, {"/lib/a.jpg", "/lib/b.jpg", "/lib/clip.mov"})
+            expected = {os.path.normpath(p) for p in (
+                "/lib/a.jpg", "/lib/b.jpg", "/lib/clip.mov",
+            )}
+            self.assertEqual(paths, expected)
 
     def test_forget_removes(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -107,6 +114,50 @@ class TestFingerprintCache(unittest.TestCase):
             db_path = os.path.join(folder, "cache.db")
             with FingerprintCache(db_path) as cache:
                 self.assertFalse(cache.rename("/lib/nope.jpg", "/lib/nope_a.jpg"))
+
+    def test_mixed_separator_lookup_finds_stored_entry(self):
+        # Path-normalisation at the cache boundary: storing with one
+        # separator form must still be findable via the other.
+        # `os.path.join` here mimics what real callers produce — on Windows
+        # both forms end up canonicalised by `os.path.normpath`.
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = os.path.join(folder, "cache.db")
+            with FingerprintCache(db_path) as cache:
+                stored_path = os.path.normpath("/lib/sub/a.jpg")
+                stored = _image_fp(stored_path)
+                cache.store(stored)
+                # Look up using a path with a redundant "." segment — must
+                # still match because normpath collapses ".".
+                got = cache.lookup(
+                    "/lib/./sub/a.jpg", stored.size, stored.mtime,
+                )
+                self.assertIsNotNone(got)
+                self.assertEqual(got.file_sha256, stored.file_sha256)
+
+    def test_store_normalises_redundant_path_segments(self):
+        # Two stores with logically-equivalent paths (one canonical, one
+        # with a "./" segment) collapse to a single row, not two.
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = os.path.join(folder, "cache.db")
+            with FingerprintCache(db_path) as cache:
+                canonical = os.path.normpath("/lib/sub/a.jpg")
+                cache.store(_image_fp(canonical, size=1000))
+                cache.store(_image_fp("/lib/./sub/a.jpg", size=2000))
+                all_fingerprints = cache.all_fingerprints()
+            self.assertEqual(len(all_fingerprints), 1)
+            # Second store replaced the first (INSERT OR REPLACE semantics).
+            self.assertEqual(all_fingerprints[0].size, 2000)
+
+    def test_rename_handles_mixed_separator_old_key(self):
+        # rename should find the entry even if the caller passes a
+        # non-canonical old path.
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = os.path.join(folder, "cache.db")
+            with FingerprintCache(db_path) as cache:
+                stored = _image_fp(os.path.normpath("/lib/sub/a.jpg"))
+                cache.store(stored)
+                moved = cache.rename("/lib/./sub/a.jpg", "/lib/sub/a_a.jpg")
+                self.assertTrue(moved)
 
 
 if __name__ == "__main__":

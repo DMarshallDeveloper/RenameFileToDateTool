@@ -131,12 +131,23 @@ def mark(root: str, dry_run: bool, cache_path: str | None = None,
     _fingerprints, groups = _load_groups(root, cache_path, phash_threshold)
     plan = plan_mark(groups)
     prefix = "[DRY-RUN] " if dry_run else ""
-    logger.info("%s%d files would be renamed across %d groups",
-                prefix, len(plan), len(groups))
+    cross_folder = sum(
+        1 for old, new, _ in plan
+        if os.path.dirname(old) != os.path.dirname(new)
+    )
+    logger.info("%s%d files would be renamed across %d groups (%d cross-folder)",
+                prefix, len(plan), len(groups), cross_folder)
     for old_path, new_path, tier in plan[:25]:
+        # Cross-folder rename = a cross-date loser moving into the winner's
+        # folder; show the relpath so the destination folder is visible.
+        if os.path.dirname(old_path) != os.path.dirname(new_path):
+            old_repr = os.path.relpath(old_path, root)
+            new_repr = os.path.relpath(new_path, root)
+        else:
+            old_repr = os.path.basename(old_path)
+            new_repr = os.path.basename(new_path)
         logger.info("%s  T%d  %s  ->  %s",
-                    prefix, tier,
-                    os.path.basename(old_path), os.path.basename(new_path))
+                    prefix, tier, old_repr, new_repr)
     if len(plan) > 25:
         logger.info("%s  ... and %d more", prefix, len(plan) - 25)
     if not dry_run:
@@ -154,12 +165,24 @@ def mark(root: str, dry_run: bool, cache_path: str | None = None,
 def finalize(root: str, dry_run: bool, cache_path: str | None = None) -> int:
     plan = plan_finalize(root)
     prefix = "[DRY-RUN] " if dry_run else ""
-    logger.info("%s%d lone-survivor files would have their suffix stripped",
-                prefix, len(plan))
+    cross_folder = sum(
+        1 for old, new in plan
+        if os.path.dirname(old) != os.path.dirname(new)
+    )
+    logger.info("%s%d marked files would be returned to canonical form "
+                "(%d cross-folder)",
+                prefix, len(plan), cross_folder)
     for old_path, new_path in plan[:25]:
+        # If the file is moving to another folder (a cross-date loser going
+        # home), the destination folder is significant — show its relpath
+        # rather than just the basename.
+        if os.path.dirname(old_path) != os.path.dirname(new_path):
+            dest_repr = os.path.relpath(new_path, root)
+        else:
+            dest_repr = os.path.basename(new_path)
         logger.info("%s  %s  ->  %s",
                     prefix,
-                    os.path.basename(old_path), os.path.basename(new_path))
+                    os.path.basename(old_path), dest_repr)
     if len(plan) > 25:
         logger.info("%s  ... and %d more", prefix, len(plan) - 25)
     if not dry_run:

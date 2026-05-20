@@ -21,6 +21,7 @@ from typing import Iterable
 from PIL import Image
 
 from photo_lib.duplicate_finder import DuplicateGroup, FileFingerprint
+from photo_lib.filename_pattern import CANONICAL_FILENAME_PARTS_RE
 
 logger = logging.getLogger("photo_lib")
 
@@ -81,17 +82,38 @@ def _render_card(fingerprint: FileFingerprint, position: int, library_root: str)
     )
 
 
+def _is_cross_date_group(group: DuplicateGroup) -> bool:
+    """A group spans different timestamps when its canonical members don't all
+    share the same ``<base>``. Non-canonical members are ignored (they don't
+    contribute a base anyway). A group with 0-1 distinct bases is NOT
+    cross-date.
+    """
+    bases: set[str] = set()
+    for fingerprint in group.fingerprints:
+        match = CANONICAL_FILENAME_PARTS_RE.match(os.path.basename(fingerprint.path))
+        if match:
+            bases.add(match.group("base"))
+    return len(bases) >= 2
+
+
 def _render_group(group: DuplicateGroup, library_root: str) -> str:
     label, blurb, color = TIER_LABELS[group.tier]
     cards = "\n".join(
         _render_card(fingerprint, position, library_root)
         for position, fingerprint in enumerate(group.ranked())
     )
+    cross_date_badge = (
+        '<span class="cross-date-badge" '
+        'title="Group members have different timestamps — pick which date is the true one">'
+        'cross-date</span>'
+        if _is_cross_date_group(group) else ""
+    )
     return (
         f'<div class="group">'
         f'  <div class="group-header" style="border-left-color: {color}">'
         f'    <span class="tier-badge" style="background: {color}">{label}</span>'
         f'    <span class="tier-blurb">{blurb}</span>'
+        f'    {cross_date_badge}'
         f'    <span class="count">{len(group.fingerprints)} files</span>'
         f'  </div>'
         f'  <div class="cards">{cards}</div>'
@@ -132,6 +154,8 @@ h1 { font-size: 1.3rem; }
 .winner { display: inline-block; background: #1f7a1f; color: #fff;
           font-size: 0.7rem; padding: 0.05rem 0.35rem; border-radius: 3px;
           margin-bottom: 0.2rem; }
+.cross-date-badge { background: #b25a00; color: #fff; padding: 0.1rem 0.5rem;
+                    border-radius: 3px; font-weight: bold; font-size: 0.75rem; }
 </style>
 </head><body>
 """

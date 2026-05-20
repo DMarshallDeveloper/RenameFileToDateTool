@@ -45,16 +45,28 @@ from typing import Iterable
 from PIL import Image
 
 from photo_lib.binaries import FFMPEG, FFPROBE
+from photo_lib.config import BUNDLED_EARLY_FOLDER, BUNDLED_EARLY_YEAR_RANGE
 from photo_lib.extensions import is_image, is_video, normalize_extension
 from photo_lib.filename_pattern import CANONICAL_FILENAME_PARTS_RE
 
+BUNDLED_EARLY_YEARS = set(range(*BUNDLED_EARLY_YEAR_RANGE))
+
 logger = logging.getLogger("photo_lib")
 
-# Pattern for the marked form: <canonical-base>_<idx>_<letter>.<ext>
+# Pattern for the marked form, two shapes accepted:
+#   plain:        <winner_base>_<idx>_<letter>.<ext>
+#   with origin:  <winner_base>_<idx>_<letter>__from_<loser_base>.<ext>
+#
+# The optional ``__from_<loser_base>`` carries the loser's original timestamp
+# when the duplicate group spanned different dates — without this marker the
+# loser's date would be erased by the rename (it inherits the winner's base).
+# Finalize uses ``origin_base`` to send a surviving cross-date loser back to
+# its original year folder instead of leaving it stranded in the winner's.
 MARKED_FILENAME_RE = re.compile(
     r'^(?P<base>\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2})'
     r'_(?P<idx>\d+)'
     r'_(?P<letter>[a-z])'
+    r'(?:__from_(?P<origin_base>\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}))?'
     r'\.(?P<ext>[a-zA-Z0-9]{3,4})$'
 )
 
@@ -425,16 +437,25 @@ def _parse_canonical_parts(path: str) -> tuple[str, str, str] | None:
 def plan_mark(groups: Iterable[DuplicateGroup]) -> list[tuple[str, str, int]]:
     """Return ``[(old_path, new_path, tier), ...]`` for renaming files into _a/_b/_c form.
 
-    All files in a duplicate group share the WINNER's ``<base>_<idx>`` prefix,
-    differing only by the ``_<letter>`` suffix. This is what makes the marked
-    files sort adjacent in File Explorer:
+    All files in a duplicate group share the WINNER's ``<base>_<idx>`` prefix
+    and end up in the WINNER's folder — that's what makes the marked files
+    sort adjacent when scrolling in File Explorer:
 
       group winner:   2014-01-01 13.00.00_1.jpg   -> 2014-01-01 13.00.00_1_a.jpg
       group dup #2:   2014-01-01 13.00.00_14.jpg  -> 2014-01-01 13.00.00_1_b.jpg
       group dup #3:   2014-01-01 13.00.00_29.jpg  -> 2014-01-01 13.00.00_1_c.jpg
 
     Each file keeps its own extension (so .heic, .mp4, .mov pairs at the same
-    timestamp stay distinguishable).
+    timestamp stay distinguishable within a group).
+
+    **Cross-date groups** (members with different timestamps): each loser
+    carries a ``__from_<loser_base>`` marker so its original date stays
+    visible in the filename and ``plan_finalize`` can send the file back home
+    if the user decides it wasn't really a duplicate:
+
+      winner:  2014-06-15 10.00.00_1.jpg                   -> 2014-06-15 10.00.00_1_a.jpg
+      loser:   2015-08-20 14.30.00_3.jpg (in 2015 folder)  -> 2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg
+                                                              (now in 2014 folder, alongside winner)
 
     If the WINNER's filename isn't canonical, the entire group is skipped —
     we have no canonical prefix to share. If a non-winner is non-canonical,
@@ -453,109 +474,162 @@ def plan_mark(groups: Iterable[DuplicateGroup]) -> list[tuple[str, str, int]]:
             logger.warning("plan_mark skipping group: winner has non-canonical name %s",
                            ranked[0].path)
             continue
-        shared_base, shared_idx, _winner_ext = winner_parts
+        winner_base, winner_idx, _winner_ext = winner_parts
+        winner_dir = os.path.dirname(ranked[0].path)
         for letter, fingerprint in zip(string.ascii_lowercase, ranked):
             file_parts = _parse_canonical_parts(fingerprint.path)
             if file_parts is None:
                 logger.warning("plan_mark skipping non-canonical member %s",
                                fingerprint.path)
                 continue
-            _file_base, _file_idx, file_ext = file_parts
-            new_name = f"{shared_base}_{shared_idx}_{letter}.{file_ext}"
-            new_path = os.path.join(os.path.dirname(fingerprint.path), new_name)
+            loser_base, _loser_idx, file_ext = file_parts
+            if loser_base == winner_base:
+                new_name = f"{winner_base}_{winner_idx}_{letter}.{file_ext}"
+            else:
+                new_name = (
+                    f"{winner_base}_{winner_idx}_{letter}"
+                    f"__from_{loser_base}.{file_ext}"
+                )
+            new_path = os.path.join(winner_dir, new_name)
             if new_path != fingerprint.path:
                 plan.append((fingerprint.path, new_path, group.tier))
     return plan
 
 
-def plan_finalize(root: str) -> list[tuple[str, str]]:
-    """After manual review, strip the ``_<letter>`` suffix from marked files.
+def _target_folder_for_base(root: str, base: str) -> str:
+    """Year folder under ``root`` for a canonical timestamp base.
 
-    Two cases:
-
-    - **Lone survivor** (1 letter remaining in the group): the file gets
-      demoted back to ``<base>_<idx>.<ext>``. This is the common case —
-      the user kept the winning ``_a`` copy and deleted the rest.
-
-    - **Multi-survivor** (2+ letters remain): the user decided some of the
-      group's members aren't actually duplicates. The first surviving letter
-      (alphabetically — usually ``_a``, the winner) takes the group's
-      original ``<idx>``; subsequent survivors are assigned the next free
-      indices in that timestamp bucket (``<idx>+1``, ``<idx>+2``, … bumping
-      past any canonical file already there).
-
-    All ``_a`` survivors across the folder are processed first so they each
-    get their preferred ``<idx>`` before overflow allocations compete for
-    leftovers. Without this two-pass order, an earlier group's ``_b``
-    overflow could grab the idx that a later group's ``_a`` was about to
-    claim.
+    Mirrors the convention used by ``ingest_inbox_to_master.target_folder_for_year``:
+    years in the bundled-early range collapse into ``BUNDLED_EARLY_FOLDER``;
+    everything else lives in ``<year>``.
     """
-    plan: list[tuple[str, str]] = []
+    year = int(base[:4])
+    if year in BUNDLED_EARLY_YEARS:
+        return os.path.join(root, BUNDLED_EARLY_FOLDER)
+    return os.path.join(root, str(year))
+
+
+def plan_finalize(root: str) -> list[tuple[str, str]]:
+    """After manual review, strip the ``_<letter>`` (and any ``__from_<base>``)
+    suffix from marked files, returning each to a canonical name.
+
+    Three cases:
+
+    - **Lone survivor**, no origin marker (1 letter remaining in the group):
+      the file gets demoted back to ``<base>_<idx>.<ext>``. This is the
+      common case — the user kept the winning ``_a`` copy and deleted the rest.
+
+    - **Multi-survivor**, no origin marker (2+ letters remain): the user
+      decided some of the group's members aren't actually duplicates. The
+      first surviving letter (alphabetically — usually ``_a``, the winner)
+      takes the group's original ``<idx>``; subsequent survivors are
+      assigned the next free indices in that timestamp bucket
+      (``<idx>+1``, ``<idx>+2``, … bumping past any canonical file already
+      there).
+
+    - **Surviving cross-date loser** (``__from_<loser_base>`` marker on a
+      ``_b``/``_c``/… that the user kept): the file is moved back into its
+      original year folder and renamed to ``<loser_base>_<next-free-idx>.<ext>``.
+      A surviving ``_a`` never carries the marker by construction (the winner
+      defines the group's date).
+
+    The whole tree is walked once before allocation so the two-pass order
+    (all position-0 entries across all groups before any position-1 entries)
+    spans folders — necessary because a returning cross-date ``_b`` can
+    compete with a same-base ``_b`` overflow for indices in a shared
+    destination bucket.
+    """
+    # Phase 1: walk the tree once; collect marked entries and per-folder
+    # per-base canonical indices that are already taken.
+    marked_entries: list[dict] = []
+    used_canonical_by_dir_base: dict[tuple[str, str], set[int]] = {}
+
     for current_dir, _subdirs, filenames in os.walk(root):
-        # Bucket every file in the folder.
-        marked: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
-        used_canonical: dict[str, set[int]] = {}
         for name in filenames:
             marked_match = MARKED_FILENAME_RE.match(name)
             if marked_match:
-                key = (marked_match.group("base"), marked_match.group("idx"))
-                marked.setdefault(key, []).append((
-                    marked_match.group("letter"),
-                    name,
-                    marked_match.group("ext"),
-                ))
+                marked_entries.append({
+                    "folder": current_dir,
+                    "winner_base": marked_match.group("base"),
+                    "winner_idx": int(marked_match.group("idx")),
+                    "letter": marked_match.group("letter"),
+                    "origin_base": marked_match.group("origin_base"),
+                    "name": name,
+                    "ext": marked_match.group("ext"),
+                })
                 continue
             canonical_match = CANONICAL_FILENAME_PARTS_RE.match(name)
             if canonical_match:
-                used_canonical.setdefault(
-                    canonical_match.group("base"), set()
+                used_canonical_by_dir_base.setdefault(
+                    (current_dir, canonical_match.group("base")), set()
                 ).add(int(canonical_match.group("idx")))
 
-        # Sort each group's entries by letter so position 0 is always _a.
-        for entries in marked.values():
-            entries.sort(key=lambda triple: triple[0])
+    # Phase 2: bucket marked entries by their winner group; sort by letter.
+    marked_groups: dict[tuple[str, str, int], list[dict]] = {}
+    for entry in marked_entries:
+        key = (entry["folder"], entry["winner_base"], entry["winner_idx"])
+        marked_groups.setdefault(key, []).append(entry)
+    for entries in marked_groups.values():
+        entries.sort(key=lambda e: e["letter"])
 
-        # Process by position-within-group, then by (base, idx) — so every
-        # _a across all groups gets its preferred slot before any _b looks.
-        sorted_group_keys = sorted(marked.keys())
-        max_letters = max((len(items) for items in marked.values()), default=0)
-        for position in range(max_letters):
-            for group_key in sorted_group_keys:
-                entries = marked[group_key]
-                if position >= len(entries):
-                    continue
-                base, original_idx_str = group_key
-                original_idx = int(original_idx_str)
-                _letter, name, ext = entries[position]
+    # Phase 3: two-pass allocation across all folders.
+    plan: list[tuple[str, str]] = []
+    sorted_group_keys = sorted(marked_groups.keys())
+    max_letters = max((len(items) for items in marked_groups.values()), default=0)
 
-                # Preferred target: original_idx + position. Bump past
-                # anything already taken in this base's bucket.
-                target_idx = original_idx + position
-                bucket = used_canonical.setdefault(base, set())
-                while target_idx in bucket:
-                    target_idx += 1
-                bucket.add(target_idx)
+    for position in range(max_letters):
+        for group_key in sorted_group_keys:
+            entries = marked_groups[group_key]
+            if position >= len(entries):
+                continue
+            entry = entries[position]
+            origin_base = entry["origin_base"]
 
-                new_name = f"{base}_{target_idx}.{ext}"
-                old_path = os.path.join(current_dir, name)
-                new_path = os.path.join(current_dir, new_name)
-                if new_path == old_path:
-                    continue
-                if os.path.exists(new_path):
-                    # Tracked state says the slot is free but disk disagrees —
-                    # likely a non-canonical filename we didn't index. Safer
-                    # to skip than clobber.
-                    logger.warning(
-                        "finalize: target exists, skipping %s -> %s",
-                        name, new_name,
-                    )
-                    continue
-                plan.append((old_path, new_path))
+            if origin_base is None:
+                # Same-base mark: stay in current folder. Position 0 gets
+                # winner_idx, position 1 gets winner_idx + 1, …
+                target_dir = entry["folder"]
+                target_base = entry["winner_base"]
+                preferred_idx = entry["winner_idx"] + position
+            else:
+                # Cross-date loser: move back to origin year's folder. The
+                # winner_idx context has no meaning in the destination
+                # bucket — allocate the lowest free idx instead.
+                target_dir = _target_folder_for_base(root, origin_base)
+                target_base = origin_base
+                preferred_idx = 1
+
+            bucket = used_canonical_by_dir_base.setdefault(
+                (target_dir, target_base), set()
+            )
+            while preferred_idx in bucket:
+                preferred_idx += 1
+            bucket.add(preferred_idx)
+
+            new_name = f"{target_base}_{preferred_idx}.{entry['ext']}"
+            old_path = os.path.join(entry["folder"], entry["name"])
+            new_path = os.path.join(target_dir, new_name)
+            if new_path == old_path:
+                continue
+            if os.path.exists(new_path):
+                # Tracked state says the slot is free but disk disagrees —
+                # likely a non-canonical filename we didn't index. Safer
+                # to skip than clobber.
+                logger.warning(
+                    "finalize: target exists, skipping %s -> %s",
+                    entry["name"], new_name,
+                )
+                continue
+            plan.append((old_path, new_path))
     return plan
 
 
 def apply_simple_rename_plan(plan: list[tuple[str, str]]) -> int:
-    """Two-phase staged rename (mirrors photo_lib.canonical_renumber)."""
+    """Two-phase staged rename (mirrors photo_lib.canonical_renumber).
+
+    Tolerates cross-folder destinations: the target directory is created on
+    demand before the staged file is rolled into its final name.
+    """
     if not plan:
         return 0
     staged: list[tuple[str, str]] = []
@@ -564,5 +638,8 @@ def apply_simple_rename_plan(plan: list[tuple[str, str]]) -> int:
         os.rename(old_path, temp_path)
         staged.append((temp_path, new_path))
     for temp_path, new_path in staged:
+        target_dir = os.path.dirname(new_path)
+        if target_dir and not os.path.isdir(target_dir):
+            os.makedirs(target_dir, exist_ok=True)
         os.rename(temp_path, new_path)
     return len(staged)

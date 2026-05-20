@@ -54,6 +54,54 @@ class TestRenderHtmlReport(unittest.TestCase):
         self.assertNotIn("<script>alert.jpg", html_text)
         self.assertIn("&lt;script&gt;alert.jpg", html_text)
 
+    # The badge's full opening tag is the unambiguous signal — the bare string
+    # "cross-date" also lives in the always-rendered CSS class definition.
+    _BADGE_TAG = '<span class="cross-date-badge"'
+
+    def test_cross_date_group_gets_badge(self):
+        # Group members have different timestamps in their canonical names —
+        # the report must surface this so the reviewer knows to compare dates.
+        groups = [
+            DuplicateGroup(
+                tier=2,
+                fingerprints=[
+                    _fp("/lib/2014/2014-06-15 10.00.00_1.jpg"),
+                    _fp("/lib/2015/2015-08-20 14.30.00_3.jpg"),
+                ],
+            ),
+        ]
+        html_text = render_html_report(groups, "/lib")
+        self.assertIn(self._BADGE_TAG, html_text)
+
+    def test_same_base_group_has_no_cross_date_badge(self):
+        # Same timestamp on both files — no badge should be rendered.
+        groups = [
+            DuplicateGroup(
+                tier=1,
+                fingerprints=[
+                    _fp("/lib/2014/2014-06-15 10.00.00_1.jpg"),
+                    _fp("/lib/2014/2014-06-15 10.00.00_14.jpg"),
+                ],
+            ),
+        ]
+        html_text = render_html_report(groups, "/lib")
+        self.assertNotIn(self._BADGE_TAG, html_text)
+
+    def test_non_canonical_paths_do_not_trigger_cross_date(self):
+        # Defensive: if neither filename parses as canonical, no <base>
+        # values exist to compare; the badge must NOT appear.
+        groups = [
+            DuplicateGroup(
+                tier=3,
+                fingerprints=[
+                    _fp("/lib/random_name.jpg"),
+                    _fp("/lib/other_random.jpg"),
+                ],
+            ),
+        ]
+        html_text = render_html_report(groups, "/lib")
+        self.assertNotIn(self._BADGE_TAG, html_text)
+
 
 class TestRenderSingletonsHtmlReport(unittest.TestCase):
     def test_empty_singletons_still_well_formed(self):

@@ -289,6 +289,126 @@ class TestPlanMark(unittest.TestCase):
         self.assertEqual(os.path.basename(plan[0][0]), "2026-04-12 09.15.30_1.jpg")
 
 
+class TestPlanMarkCrossDate(unittest.TestCase):
+    """When duplicates have different timestamps, the loser moves into the
+    winner's folder and its filename carries an ``__from_<loser_base>`` marker
+    so the original date stays visible during review."""
+
+    def _bare_fingerprint(self, path: str, size: int, width: int = 100,
+                          height: int = 100) -> duplicate_finder.FileFingerprint:
+        return duplicate_finder.FileFingerprint(
+            path=path, size=size, mtime=0.0,
+            media_kind="image",
+            file_sha256="x", pixel_sha256="y", phash_hex="z",
+            frame_phashes_hex=None,
+            width=width, height=height,
+        )
+
+    def test_cross_date_loser_moves_to_winner_folder_with_marker(self):
+        # Winner is in 2014 folder; loser sits in 2015 folder under a
+        # different timestamp. After mark, both files should be in the 2014
+        # folder, with the loser's name carrying its original 2015 timestamp.
+        group = duplicate_finder.DuplicateGroup(
+            tier=2,
+            fingerprints=[
+                self._bare_fingerprint(
+                    "/lib/2014/2014-06-15 10.00.00_1.jpg",
+                    100_000, width=200, height=200,
+                ),
+                self._bare_fingerprint(
+                    "/lib/2015/2015-08-20 14.30.00_3.jpg",
+                    50_000, width=100, height=100,
+                ),
+            ],
+        )
+        plan = duplicate_finder.plan_mark([group])
+        by_old = {old: (new, tier) for old, new, tier in plan}
+
+        winner_new, _ = by_old["/lib/2014/2014-06-15 10.00.00_1.jpg"]
+        loser_new, _ = by_old["/lib/2015/2015-08-20 14.30.00_3.jpg"]
+
+        self.assertEqual(
+            winner_new,
+            os.path.join("/lib/2014", "2014-06-15 10.00.00_1_a.jpg"),
+        )
+        self.assertEqual(
+            loser_new,
+            os.path.join(
+                "/lib/2014",
+                "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg",
+            ),
+        )
+
+    def test_cross_date_loser_keeps_own_extension(self):
+        # Same as above but loser is a .mov, winner a .heic — the marker form
+        # must preserve each file's extension.
+        group = duplicate_finder.DuplicateGroup(
+            tier=2,
+            fingerprints=[
+                self._bare_fingerprint(
+                    "/lib/2014/2014-06-15 10.00.00_1.heic",
+                    100_000, width=200, height=200,
+                ),
+                self._bare_fingerprint(
+                    "/lib/2015/2015-08-20 14.30.00_3.mov",
+                    50_000, width=100, height=100,
+                ),
+            ],
+        )
+        plan = duplicate_finder.plan_mark([group])
+        new_names = sorted(os.path.basename(n) for _, n, _ in plan)
+        self.assertEqual(new_names, [
+            "2014-06-15 10.00.00_1_a.heic",
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.mov",
+        ])
+
+    def test_three_distinct_dates_each_loser_marked_with_own_origin(self):
+        # Winner from 2014, losers from 2015 and 2007 — three different
+        # year folders end up consolidated into the winner's folder, each
+        # loser carrying its own __from_<base> marker.
+        group = duplicate_finder.DuplicateGroup(
+            tier=1,
+            fingerprints=[
+                self._bare_fingerprint(
+                    "/lib/2014/2014-06-15 10.00.00_1.jpg",
+                    100_000, width=300, height=300,
+                ),
+                self._bare_fingerprint(
+                    "/lib/2015/2015-08-20 14.30.00_2.jpg",
+                    80_000, width=200, height=200,
+                ),
+                self._bare_fingerprint(
+                    "/lib/2007/2007-03-11 18.25.00_5.jpg",
+                    60_000, width=100, height=100,
+                ),
+            ],
+        )
+        plan = duplicate_finder.plan_mark([group])
+        # All three end up in /lib/2014, sharing the winner's _1 prefix.
+        for _, new_path, _ in plan:
+            self.assertEqual(os.path.dirname(new_path), "/lib/2014")
+        new_names = sorted(os.path.basename(n) for _, n, _ in plan)
+        self.assertEqual(new_names, [
+            "2014-06-15 10.00.00_1_a.jpg",
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg",
+            "2014-06-15 10.00.00_1_c__from_2007-03-11 18.25.00.jpg",
+        ])
+
+    def test_same_base_group_does_not_get_origin_marker(self):
+        # Regression: when all members share <base>, the marker must NOT be
+        # added — current behavior is preserved for same-timestamp groups.
+        group = duplicate_finder.DuplicateGroup(
+            tier=1,
+            fingerprints=[
+                self._bare_fingerprint("/lib/2014/2014-01-01 13.00.00_1.jpg", 100_000),
+                self._bare_fingerprint("/lib/2014/2014-01-01 13.00.00_14.jpg", 50_000),
+            ],
+        )
+        plan = duplicate_finder.plan_mark([group])
+        for _, new_path, _ in plan:
+            self.assertNotIn("__from_", os.path.basename(new_path))
+
+
 class TestPlanFinalize(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix='test_finalize_')
@@ -387,6 +507,179 @@ class TestPlanFinalize(unittest.TestCase):
         self.assertEqual(len(plan), 1)
         self.assertEqual(os.path.basename(plan[0][1]),
                          "2026-04-12 09.15.30_2.jpg")
+
+
+class TestPlanFinalizeCrossDate(unittest.TestCase):
+    """Cross-date surviving losers (``_b/_c`` with ``__from_<base>`` marker)
+    are sent back to their original year folder during finalize."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='test_finalize_xd_')
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _touch_in(self, subfolder: str, name: str) -> str:
+        folder = os.path.join(self.tmpdir, subfolder) if subfolder else self.tmpdir
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "wb") as fh:
+            fh.write(name.encode())
+        return path
+
+    def test_cross_date_loser_returns_to_origin_year_folder(self):
+        # User reviewed and kept the _b, deciding it WASN'T a duplicate.
+        # finalize should send it back to the 2015 folder under its original
+        # base, allocating the lowest free idx (1, since no canonical files
+        # exist in /2015 yet).
+        self._touch_in("2014", "2014-06-15 10.00.00_1_a.jpg")
+        self._touch_in(
+            "2014",
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg",
+        )
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        by_old = {
+            os.path.relpath(old, self.tmpdir).replace("\\", "/"):
+            os.path.relpath(new, self.tmpdir).replace("\\", "/")
+            for old, new in plan
+        }
+        self.assertEqual(
+            by_old["2014/2014-06-15 10.00.00_1_a.jpg"],
+            "2014/2014-06-15 10.00.00_1.jpg",
+        )
+        self.assertEqual(
+            by_old[
+                "2014/2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg"
+            ],
+            "2015/2015-08-20 14.30.00_1.jpg",
+        )
+
+    def test_cross_date_returning_loser_bumps_past_taken_idx(self):
+        # The 2015 folder already has a canonical file at _1, so the
+        # returning _b has to take _2 instead.
+        self._touch_in("2014", "2014-06-15 10.00.00_1_a.jpg")
+        self._touch_in(
+            "2014",
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg",
+        )
+        self._touch_in("2015", "2015-08-20 14.30.00_1.jpg")
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        by_old = {os.path.basename(old): new for old, new in plan}
+        returned_path = by_old[
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg"
+        ]
+        self.assertEqual(
+            os.path.relpath(returned_path, self.tmpdir).replace("\\", "/"),
+            "2015/2015-08-20 14.30.00_2.jpg",
+        )
+
+    def test_two_returning_losers_share_destination_bucket(self):
+        # Two different cross-date groups both have a _b surviving with the
+        # SAME origin base — they're going to the same destination bucket
+        # and must get distinct idx.
+        self._touch_in("2014", "2014-06-15 10.00.00_1_a.jpg")
+        self._touch_in(
+            "2014",
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg",
+        )
+        self._touch_in("2014", "2014-09-09 12.00.00_1_a.jpg")
+        self._touch_in(
+            "2014",
+            "2014-09-09 12.00.00_1_b__from_2015-08-20 14.30.00.jpg",
+        )
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        returned = sorted(
+            os.path.relpath(new, self.tmpdir).replace("\\", "/")
+            for old, new in plan
+            if "__from_" in os.path.basename(old)
+        )
+        self.assertEqual(returned, [
+            "2015/2015-08-20 14.30.00_1.jpg",
+            "2015/2015-08-20 14.30.00_2.jpg",
+        ])
+
+    def test_bundled_early_year_routes_to_bundled_folder(self):
+        # A 2005 origin should land in the "2000 - 2010" bundled folder, not
+        # in a /2005/ folder, because the master library convention bundles
+        # years 2000-2010.
+        self._touch_in("2014", "2014-06-15 10.00.00_1_a.jpg")
+        self._touch_in(
+            "2014",
+            "2014-06-15 10.00.00_1_b__from_2005-03-11 18.25.00.jpg",
+        )
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        returned = [
+            new for old, new in plan
+            if "__from_" in os.path.basename(old)
+        ]
+        self.assertEqual(len(returned), 1)
+        self.assertEqual(
+            os.path.relpath(returned[0], self.tmpdir).replace("\\", "/"),
+            "2000 - 2010/2005-03-11 18.25.00_1.jpg",
+        )
+
+    def test_multi_survivor_mixed_a_stays_b_returns_home(self):
+        # User kept BOTH the _a (in winner's folder) and the _b (cross-date
+        # loser). _a strips to canonical and stays in 2014; _b is sent home
+        # to 2015.
+        self._touch_in("2014", "2014-06-15 10.00.00_1_a.jpg")
+        self._touch_in(
+            "2014",
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg",
+        )
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        by_old = {
+            os.path.basename(old):
+            os.path.relpath(new, self.tmpdir).replace("\\", "/")
+            for old, new in plan
+        }
+        self.assertEqual(
+            by_old["2014-06-15 10.00.00_1_a.jpg"],
+            "2014/2014-06-15 10.00.00_1.jpg",
+        )
+        self.assertEqual(
+            by_old[
+                "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg"
+            ],
+            "2015/2015-08-20 14.30.00_1.jpg",
+        )
+
+    def test_origin_folder_missing_creates_on_apply(self):
+        # /2015/ doesn't exist yet; finalize plans the rename, apply creates
+        # the folder and moves the file in.
+        self._touch_in(
+            "2014",
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg",
+        )
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        self.assertEqual(len(plan), 1)
+        duplicate_finder.apply_simple_rename_plan(plan)
+        expected = os.path.join(
+            self.tmpdir, "2015", "2015-08-20 14.30.00_1.jpg",
+        )
+        self.assertTrue(
+            os.path.exists(expected),
+            f"Expected file at {expected}; tree: "
+            f"{[os.path.relpath(os.path.join(d, f), self.tmpdir) for d, _, fs in os.walk(self.tmpdir) for f in fs]}",
+        )
+
+    def test_same_base_groups_in_subfolders_still_work(self):
+        # Regression: existing same-base behavior must keep working when
+        # marked files live in subfolders (the new tree-walk shouldn't
+        # change the outcome for plain marks).
+        self._touch_in("2014", "2014-06-15 10.00.00_1_a.jpg")
+        self._touch_in("2014", "2014-06-15 10.00.00_1_b.jpg")
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        by_old = {
+            os.path.basename(old): os.path.basename(new)
+            for old, new in plan
+        }
+        self.assertEqual(by_old["2014-06-15 10.00.00_1_a.jpg"],
+                         "2014-06-15 10.00.00_1.jpg")
+        self.assertEqual(by_old["2014-06-15 10.00.00_1_b.jpg"],
+                         "2014-06-15 10.00.00_2.jpg")
 
 
 class TestHammingDistance(unittest.TestCase):

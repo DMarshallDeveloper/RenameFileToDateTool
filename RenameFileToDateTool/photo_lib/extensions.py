@@ -10,7 +10,7 @@ drifted — ``write_exif_from_filename.py`` was missing heif/3gp/m4v and would s
 """
 
 IMAGE_EXTENSIONS = frozenset({
-    "jpg", "jpeg", "png", "gif", "heic", "heif", "tiff",
+    "jpg", "jpeg", "png", "gif", "heic", "heif", "tiff", "webp",
 })
 
 VIDEO_EXTENSIONS = frozenset({
@@ -19,10 +19,23 @@ VIDEO_EXTENSIONS = frozenset({
 
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
+# Spelling variants we canonicalize to a single extension so a folder doesn't
+# end up with both ``foo.jpeg`` and ``foo.jpg`` for what's really the same
+# content type. The takeout dump produces thousands of ``.jpeg`` files; master
+# library convention is ``.jpg``.
+CANONICAL_EXTENSION_ALIASES = {
+    "jpeg": "jpg",
+}
+
 
 def normalize_extension(ext: str) -> str:
     """Drop a leading dot and lowercase. Idempotent."""
     return ext.lower().lstrip(".")
+
+
+def canonical_extension(ext: str) -> str:
+    """Lowercase, strip leading dot, and resolve spelling aliases (jpeg->jpg)."""
+    return CANONICAL_EXTENSION_ALIASES.get(normalize_extension(ext), normalize_extension(ext))
 
 
 def is_image(ext: str) -> bool:

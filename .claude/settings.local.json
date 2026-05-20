@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ls D:/Files/Documents/Code/RenameFileToDateTool/RenameFileToDateTool/*.py)"
+      "Bash(ls D:/Files/Documents/Code/RenameFileToDateTool/RenameFileToDateTool/*.py)",
+      "Bash(python -m unittest tests.test_takeout_matching tests.test_bring_files_to_top_level tests.test_extract_and_bring tests.test_split_media_into_folders tests.test_detect_malformed_filenames)",
+      "Bash(python -m unittest tests.test_split_media_into_folders.TestProcessFolderStructure.test_non_media_files_go_to_non_media_folder -v)",
+      "Bash(python -m unittest tests.test_known_bugs tests.test_split_media_into_folders -v)"
     ]
   }
 }

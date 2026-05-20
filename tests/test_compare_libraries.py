@@ -207,5 +207,138 @@ class TestDiffTrees(unittest.TestCase):
         self.assertEqual(r['transcodes_missing_soft_delete'], [])
 
 
+class TestPerYearBreakdown(unittest.TestCase):
+    """The per-year breakdown is the headline diagnostic for "why does master
+    have N more files than the takeout?" — it surfaces the imbalance year by
+    year and categorizes the unmatched files so the source of the delta is
+    immediately visible."""
+
+    def setUp(self):
+        self.before = tempfile.mkdtemp(prefix='cmp_year_b_')
+        self.after = tempfile.mkdtemp(prefix='cmp_year_a_')
+
+    def tearDown(self):
+        shutil.rmtree(self.before, ignore_errors=True)
+        shutil.rmtree(self.after, ignore_errors=True)
+
+    def _make(self, root, rel, size=100):
+        path = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(path) or root, exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(b'x' * size)
+
+    def _diff(self):
+        return compare_libraries.diff_trees(
+            compare_libraries.walk_tree(self.before),
+            compare_libraries.walk_tree(self.after),
+            os.path.abspath(self.after),
+        )
+
+    def test_year_extracted_from_canonical_filename(self):
+        self.assertEqual(
+            compare_libraries._year_for_rel_path('2014/2014-06-15 14.30.00_1.jpg'),
+            '2014',
+        )
+
+    def test_year_extracted_from_folder_when_basename_unparseable(self):
+        self.assertEqual(
+            compare_libraries._year_for_rel_path('2014/random_name.jpg'),
+            '2014',
+        )
+
+    def test_unknown_when_no_year_anywhere(self):
+        self.assertEqual(
+            compare_libraries._year_for_rel_path('misc/no_date_here.jpg'),
+            'unknown',
+        )
+
+    def test_per_year_rows_record_matched_and_unmatched(self):
+        # Year 2014: 2 files on each side, both pair up (same_name).
+        self._make(self.before, '2014/2014-06-15 14.30.00_1.jpg', size=1000)
+        self._make(self.before, '2014/2014-07-01 10.00.00_1.jpg', size=1000)
+        self._make(self.after, '2014/2014-06-15 14.30.00_1.jpg', size=1000)
+        self._make(self.after, '2014/2014-07-01 10.00.00_1.jpg', size=1000)
+        # Year 2024: master has an extra file with no before counterpart at all.
+        self._make(self.after, '2024/2024-12-25 09.00.00_1.jpg', size=1000)
+
+        result = self._diff()
+        year_2014 = result['per_year_breakdown']['2014']
+        self.assertEqual(year_2014['before'], 2)
+        self.assertEqual(year_2014['after'], 2)
+        self.assertEqual(year_2014['matched'], 2)
+
+        year_2024 = result['per_year_breakdown']['2024']
+        self.assertEqual(year_2024['before'], 0)
+        self.assertEqual(year_2024['after'], 1)
+        self.assertEqual(year_2024['isolated_extra'], 1)
+
+
+class TestUnmatchedCategorization(unittest.TestCase):
+    """Each only_in_after/only_in_before file is partitioned by its relationship
+    to matched pairs so the user can tell "extra copy on the same timestamp" from
+    "isolated extra with no other file on its date"."""
+
+    def setUp(self):
+        self.before = tempfile.mkdtemp(prefix='cmp_cat_b_')
+        self.after = tempfile.mkdtemp(prefix='cmp_cat_a_')
+
+    def tearDown(self):
+        shutil.rmtree(self.before, ignore_errors=True)
+        shutil.rmtree(self.after, ignore_errors=True)
+
+    def _make(self, root, rel, size=100):
+        path = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(path) or root, exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(b'x' * size)
+
+    def _diff(self):
+        return compare_libraries.diff_trees(
+            compare_libraries.walk_tree(self.before),
+            compare_libraries.walk_tree(self.after),
+            os.path.abspath(self.after),
+        )
+
+    def test_same_timestamp_extra_when_master_has_second_copy(self):
+        # _1 pairs; _2 is an extra at the same exact timestamp — likely a
+        # duplicate kept locally that was not in Google Photos.
+        self._make(self.before, '2014/2014-06-15 14.30.00_1.jpg', size=1000)
+        self._make(self.after, '2014/2014-06-15 14.30.00_1.jpg', size=1000)
+        self._make(self.after, '2014/2014-06-15 14.30.00_2.jpg', size=1500)
+        result = self._diff()
+        self.assertEqual(len(result['only_in_after_by_reason']['same_timestamp_extra']), 1)
+        self.assertEqual(result['only_in_after_by_reason']['same_date_extra'], [])
+        self.assertEqual(result['only_in_after_by_reason']['isolated_extra'], [])
+
+    def test_same_date_extra_when_master_has_different_time_on_known_date(self):
+        # Master has a photo on a date that Before knows about, but the time differs —
+        # it's a different photo on the same day.
+        self._make(self.before, '2014/2014-06-15 14.30.00_1.jpg', size=1000)
+        self._make(self.after, '2014/2014-06-15 14.30.00_1.jpg', size=1000)
+        self._make(self.after, '2014/2014-06-15 18.45.00_1.jpg', size=1100)
+        result = self._diff()
+        self.assertEqual(result['only_in_after_by_reason']['same_timestamp_extra'], [])
+        self.assertEqual(len(result['only_in_after_by_reason']['same_date_extra']), 1)
+        self.assertEqual(result['only_in_after_by_reason']['isolated_extra'], [])
+
+    def test_isolated_extra_when_date_absent_from_before(self):
+        # Year 2024 doesn't appear in Before at all — likely added after the takeout.
+        self._make(self.before, '2014/2014-06-15 14.30.00_1.jpg', size=1000)
+        self._make(self.after, '2014/2014-06-15 14.30.00_1.jpg', size=1000)
+        self._make(self.after, '2024/2024-12-25 09.00.00_1.jpg', size=1500)
+        result = self._diff()
+        self.assertEqual(result['only_in_after_by_reason']['same_timestamp_extra'], [])
+        self.assertEqual(result['only_in_after_by_reason']['same_date_extra'], [])
+        self.assertEqual(len(result['only_in_after_by_reason']['isolated_extra']), 1)
+
+    def test_symmetric_missing_categorization_on_before_side(self):
+        # Before has a file Master doesn't — the symmetric "missing" buckets fire.
+        self._make(self.before, '2014/2014-06-15 14.30.00_1.jpg', size=1000)
+        self._make(self.before, '2014/2014-06-15 14.30.00_2.jpg', size=1200)
+        self._make(self.after, '2014/2014-06-15 14.30.00_1.jpg', size=1000)
+        result = self._diff()
+        self.assertEqual(len(result['only_in_before_by_reason']['same_timestamp_missing']), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

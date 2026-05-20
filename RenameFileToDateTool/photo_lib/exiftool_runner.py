@@ -122,8 +122,13 @@ def is_metadata_in_sync(file_metadata: dict, expected_dt, file_tz, attribute_mod
     return True
 
 
-def write_exif_dates_batch(file_date_map, attribute_modes, error_log=None) -> None:
-    """Write date attributes for all files in a single exiftool ``-csv`` call.
+WRITE_BATCH_CHUNK_SIZE = 100
+WRITE_BATCH_TIMEOUT_SECONDS = 1200
+
+
+def write_exif_dates_batch(file_date_map, attribute_modes, error_log=None,
+                           chunk_size: int = WRITE_BATCH_CHUNK_SIZE) -> None:
+    """Write date attributes for the given files via exiftool ``-csv``, chunked.
 
     ``file_date_map``: dict ``file_path → (datetime, tzinfo)``. The tzinfo is the
                        photo's local timezone (detected per-file, NZ fallback).
@@ -133,10 +138,33 @@ def write_exif_dates_batch(file_date_map, attribute_modes, error_log=None) -> No
                    shared ``photo_lib`` logger. The parameter is kept for back-compat
                    with old callers; if a file-like is provided, its writes are
                    mirrored there as well.
+    ``chunk_size``: files per exiftool invocation. The 600s subprocess timeout
+                    was reached on a 12689-file batch (~21 files/sec) when this
+                    was unchunked. Smaller chunks finish well under the timeout
+                    and a single failing chunk doesn't lose the whole sweep.
     """
     if not file_date_map:
         return
 
+    all_paths = list(file_date_map.keys())
+    total_files = len(all_paths)
+    if total_files > chunk_size:
+        _logger.info("Chunking %d files into batches of %d", total_files, chunk_size)
+
+    for chunk_start in range(0, total_files, chunk_size):
+        chunk_paths = all_paths[chunk_start:chunk_start + chunk_size]
+        chunk_index = chunk_start // chunk_size + 1
+        chunk_total = (total_files + chunk_size - 1) // chunk_size
+        if chunk_total > 1:
+            _logger.info("Batch %d/%d: writing %d files...",
+                         chunk_index, chunk_total, len(chunk_paths))
+        chunk_file_date_map = {path: file_date_map[path] for path in chunk_paths}
+        _write_exif_dates_single_batch(chunk_file_date_map, attribute_modes, error_log)
+
+
+def _write_exif_dates_single_batch(file_date_map, attribute_modes, error_log) -> None:
+    """One exiftool invocation. Kept private so callers go through the chunked
+    wrapper above and inherit the per-call timeout safety."""
     attributes = list(attribute_modes.keys())
 
     csv_buffer = io.StringIO()
@@ -166,7 +194,7 @@ def write_exif_dates_batch(file_date_map, attribute_modes, error_log=None) -> No
         result = subprocess.run(
             [EXIFTOOL, f'-csv={csv_path}', '-overwrite_original', '-@', list_path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            encoding='utf-8', errors='replace', timeout=600
+            encoding='utf-8', errors='replace', timeout=WRITE_BATCH_TIMEOUT_SECONDS
         )
         if result.returncode != 0:
             msg = f"exiftool exit {result.returncode}: {(result.stderr or '')[:500]}"
@@ -174,7 +202,7 @@ def write_exif_dates_batch(file_date_map, attribute_modes, error_log=None) -> No
             if error_log is not None:
                 error_log.write(msg + "\n")
     except subprocess.TimeoutExpired:
-        msg = "Timeout during batch metadata write"
+        msg = f"Timeout during batch metadata write ({len(file_date_map)} files)"
         _logger.error(msg)
         if error_log is not None:
             error_log.write(msg + "\n")

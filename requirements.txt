@@ -4,3 +4,6 @@ timezonefinder>=8.0,<9
 # tzdata: Python's zoneinfo module needs this on Windows (the OS ships no
 # system tzdata). Required for ZoneInfo("Pacific/Auckland") in takeout_geo.
 tzdata
+# imagehash: perceptual hashing for find_duplicate_photos.py. pHash/wHash etc.
+# survive re-encoding and resizing where exact pixel hashing wouldn't.
+imagehash>=4.3,<5

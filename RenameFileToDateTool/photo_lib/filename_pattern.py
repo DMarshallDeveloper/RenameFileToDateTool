@@ -34,6 +34,15 @@ CANONICAL_FILENAME_RE = re.compile(
     r'^\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}_\d+\.[a-zA-Z0-9]{3,4}$'
 )
 
+# Named-group version of CANONICAL_FILENAME_RE: lets callers pull out the
+# timestamp base, the _N index and the extension separately. Used by the
+# normalize_canonical_names script which renumbers buckets keyed on base.
+CANONICAL_FILENAME_PARTS_RE = re.compile(
+    r'^(?P<base>\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2})'
+    r'_(?P<idx>\d+)'
+    r'\.(?P<ext>[a-zA-Z0-9]{3,4})$'
+)
+
 # Placeholder filenames: YYYY-01-01 followed by one of the historical placeholder
 # times. Two conventions accumulated:
 #   - ``00.00.00`` — midnight Jan 1

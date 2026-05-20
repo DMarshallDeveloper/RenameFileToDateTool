@@ -45,6 +45,7 @@ from photo_lib.filename_pattern import (  # noqa: E402
     PLACEHOLDER_FILENAME_RE,
     apply_placeholder_time_bump,
     parse_filename_datetime,
+    parse_filename_year,
 )
 from photo_lib.logging_setup import configure_logging  # noqa: E402
 from photo_lib.tk_picker import resolve_directory  # noqa: E402
@@ -111,11 +112,15 @@ def placeholder_counterpart(rel_path):
     return os.path.join(dirname, f'{year}-01-01 {other_time}{rest}')
 
 
-def _candidates_in_same_dir(after_dict, backup_dir, canonical_prefix):
+def _candidates_in_same_dir(after_dict, backup_dir, canonical_prefix, consumed_after=None):
     """Return after-side rel paths in ``backup_dir`` whose basename starts with
-    ``canonical_prefix + '_'`` (the ``_N`` counter follows)."""
+    ``canonical_prefix + '_'`` (the ``_N`` counter follows). Already-consumed
+    after files are skipped so each after file pairs with at most one backup."""
     matches = []
+    consumed_after = consumed_after or set()
     for after_rel in after_dict:
+        if after_rel in consumed_after:
+            continue
         if os.path.dirname(after_rel) != backup_dir:
             continue
         after_base = os.path.splitext(os.path.basename(after_rel))[0]
@@ -124,26 +129,21 @@ def _candidates_in_same_dir(after_dict, backup_dir, canonical_prefix):
     return matches
 
 
-def _soft_delete_path(master_root, basename):
-    """If ``basename`` was soft-deleted under any of the known
-    ``_Inbox/removed_*/`` folders, return its relative path. Else ``None``."""
-    for folder in SOFT_DELETE_FOLDER_NAMES:
-        candidate_rel = os.path.join(SOFT_DELETE_INBOX, folder, basename)
-        if os.path.isfile(os.path.join(master_root, candidate_rel)):
-            return candidate_rel
-    return None
-
-
-def find_match(backup_rel, backup_size, after_dict, master_root):
+def find_match(backup_rel, backup_size, after_dict, master_root, consumed_after=None):
     """Try the pairing strategies in priority order. Returns
     ``(match_type, after_rel)`` for the chosen pair, or ``None`` if no master
     counterpart can be found.
 
     ``after_dict``: ``walk_tree(master_root)`` result.
     ``master_root``: absolute path; needed for the soft-delete lookup.
+    ``consumed_after``: set of after rel paths already paired in this run.
+    Skip them so each after file pairs to exactly one backup file — otherwise
+    a second backup file with the same canonical prefix would get falsely
+    paired to an already-claimed after file and disappear from ``only_in_before``.
     """
+    consumed_after = consumed_after or set()
     # 1. Exact filename match.
-    if backup_rel in after_dict:
+    if backup_rel in after_dict and backup_rel not in consumed_after:
         return 'same_name', backup_rel
 
     backup_dir = os.path.dirname(backup_rel)
@@ -152,7 +152,7 @@ def find_match(backup_rel, backup_size, after_dict, master_root):
 
     # 2. Placeholder rename pair.
     placeholder = placeholder_counterpart(backup_rel)
-    if placeholder and placeholder in after_dict:
+    if placeholder and placeholder in after_dict and placeholder not in consumed_after:
         return 'placeholder_rename', placeholder
 
     # 3. Parse datetime from filename — drives canonical-rename / extension-change.
@@ -164,7 +164,7 @@ def find_match(backup_rel, backup_size, after_dict, master_root):
         if is_placeholder:
             dt = apply_placeholder_time_bump(backup_name, dt)
         canonical_prefix = dt.strftime('%Y-%m-%d %H.%M.%S')
-        candidates = _candidates_in_same_dir(after_dict, backup_dir, canonical_prefix)
+        candidates = _candidates_in_same_dir(after_dict, backup_dir, canonical_prefix, consumed_after)
 
         if len(candidates) == 1:
             cand = candidates[0]
@@ -193,26 +193,22 @@ def find_match(backup_rel, backup_size, after_dict, master_root):
     if backup_ext in TRANSCODED_FROM_EXTS:
         backup_base = os.path.splitext(backup_name)[0]
         transcoded_rel = os.path.join(backup_dir, backup_base + TRANSCODED_TO_EXT)
-        if transcoded_rel in after_dict:
+        if transcoded_rel in after_dict and transcoded_rel not in consumed_after:
             return 'transcode', transcoded_rel
 
     return None
 
 
-def _verify_soft_delete(backup_rel, master_root):
-    """For transcoded files, verify the original is preserved in a soft-delete
-    folder. Returns True if the soft-deleted copy exists, False otherwise."""
-    basename = os.path.basename(backup_rel)
-    return _soft_delete_path(master_root, basename) is not None
-
-
 def diff_trees(before, after, master_root):
     """Pair up files between two ``walk_tree`` dicts. Returns a results dict
     keyed by match category plus the lists for unmatched and size-anomaly
-    reporting."""
+    reporting.
+
+    Per-pair decisions are emitted at DEBUG level so the on-disk log holds a
+    complete pairing record (useful for ``grep``-style verification on a
+    specific file) while the console stays at INFO-level summary."""
     consumed_after = set()
     matched_by_type = defaultdict(list)
-    transcodes_missing_soft_delete = []
     size_anomalies = []
 
     for backup_rel, backup_size in before.items():
@@ -223,24 +219,26 @@ def diff_trees(before, after, master_root):
         if any(seg in backup_rel.split(os.sep) for seg in SOFT_DELETE_FOLDER_NAMES):
             continue
 
-        result = find_match(backup_rel, backup_size, after, master_root)
+        result = find_match(backup_rel, backup_size, after, master_root, consumed_after)
         if result is None:
+            logger.debug("NO MATCH: %s (backup size=%d)", backup_rel, backup_size)
             continue  # accounted for in only_in_before below
         match_type, after_rel = result
         consumed_after.add(after_rel)
         matched_by_type[match_type].append((backup_rel, after_rel))
 
         after_size = after.get(after_rel, -1)
-        # Size sanity check, skipped for transcodes (format-level change).
+        size_diff = after_size - backup_size if after_size >= 0 else 0
+        logger.debug("%s: %s -> %s (size diff %+d)",
+                     match_type, backup_rel, after_rel, size_diff)
+
+        # Size sanity check, skipped for transcodes (format-level change is
+        # expected to shift size by tens of MB).
         if match_type != 'transcode' and after_size >= 0:
-            if abs(after_size - backup_size) > SIZE_TOLERANCE_BYTES:
+            if abs(size_diff) > SIZE_TOLERANCE_BYTES:
                 size_anomalies.append(
                     (backup_rel, after_rel, backup_size, after_size, match_type)
                 )
-
-        if match_type == 'transcode':
-            if not _verify_soft_delete(backup_rel, master_root):
-                transcodes_missing_soft_delete.append((backup_rel, after_rel))
 
     matched_set = {b for paired in matched_by_type.values() for (b, _a) in paired}
     only_in_before = sorted(b for b in before
@@ -255,24 +253,229 @@ def diff_trees(before, after, master_root):
         and not any(seg in a.split(os.sep) for seg in SOFT_DELETE_FOLDER_NAMES)
     )
 
+    # Transcodes must preserve their original somewhere under _Inbox/removed_*/.
+    # If the original isn't there, the converter ran but the soft-delete step
+    # didn't — raise it as a separate finding so the migration isn't trusted.
+    transcodes_missing_soft_delete = []
+    for backup_rel, _after_rel in matched_by_type.get('transcode', []):
+        backup_name = os.path.basename(backup_rel)
+        soft_deleted_present = any(
+            os.path.join(SOFT_DELETE_INBOX, folder_name, backup_name) in after
+            for folder_name in SOFT_DELETE_FOLDER_NAMES
+        )
+        if not soft_deleted_present:
+            transcodes_missing_soft_delete.append(backup_rel)
+
+    only_in_after_by_reason = categorize_unmatched_files(
+        unmatched_rel_paths=only_in_after,
+        opposite_side_rel_paths=before,
+        matched_pairs_by_type=matched_by_type,
+        opposite_side_is_before=True,
+    )
+    only_in_before_by_reason = categorize_unmatched_files(
+        unmatched_rel_paths=only_in_before,
+        opposite_side_rel_paths=after,
+        matched_pairs_by_type=matched_by_type,
+        opposite_side_is_before=False,
+    )
+
+    per_year_breakdown = build_per_year_breakdown(
+        before, after, matched_by_type,
+        only_in_after_by_reason, only_in_before_by_reason,
+    )
+
     return {
         'matched_by_type': dict(matched_by_type),
         'only_in_before': only_in_before,
         'only_in_after': only_in_after,
         'size_anomalies': size_anomalies,
         'transcodes_missing_soft_delete': transcodes_missing_soft_delete,
+        'only_in_after_by_reason': only_in_after_by_reason,
+        'only_in_before_by_reason': only_in_before_by_reason,
+        'per_year_breakdown': per_year_breakdown,
     }
 
 
-def _log_sample(level, header, items, formatter, cap=30):
+def _year_for_rel_path(rel_path):
+    """Return the year string for ``rel_path``: prefer the canonical date prefix
+    in the basename, fall back to the first 4-digit folder segment (matches the
+    library's ``YYYY/...`` layout), else ``'unknown'``.
+
+    Splits on both forward and back slashes so paths produced on either OS are
+    handled — relative paths get fed in with whatever separator the source used.
+    """
+    year = parse_filename_year(os.path.basename(rel_path))
+    if year is not None:
+        return str(year)
+    for segment in re.split(r'[\\/]', rel_path):
+        if re.fullmatch(r'\d{4}', segment):
+            return segment
+    return 'unknown'
+
+
+def _timestamp_prefix_for_rel_path(rel_path):
+    parsed_datetime = parse_filename_datetime(os.path.basename(rel_path))
+    return parsed_datetime.strftime('%Y-%m-%d %H.%M.%S') if parsed_datetime else None
+
+
+def _date_prefix_for_rel_path(rel_path):
+    parsed_datetime = parse_filename_datetime(os.path.basename(rel_path))
+    return parsed_datetime.strftime('%Y-%m-%d') if parsed_datetime else None
+
+
+def categorize_unmatched_files(unmatched_rel_paths, opposite_side_rel_paths,
+                               matched_pairs_by_type, opposite_side_is_before):
+    """Partition unmatched files by their relationship to matched pairs.
+
+    For each unmatched file we ask: is its timestamp/date already represented
+    among the matched pairs (suggesting an extra-copy or near-duplicate), or
+    is it genuinely isolated (no counterpart anywhere on the other side)?
+
+    Categories — for ``only_in_after`` files (``opposite_side_is_before=True``):
+      - ``same_timestamp_extra``: timestamp matches a paired backup file's timestamp.
+        Most likely an additional copy at that exact moment.
+      - ``same_date_extra``: date appears in the opposite side but the exact time
+        does not — a different photo on a known-shared date.
+      - ``isolated_extra``: nothing on this date exists on the opposite side —
+        a file added after the takeout, or never uploaded.
+
+    Symmetric categories for ``only_in_before`` files use ``*_missing`` names.
+    """
+    if opposite_side_is_before:
+        category_names = ('same_timestamp_extra', 'same_date_extra', 'isolated_extra')
+    else:
+        category_names = ('same_timestamp_missing', 'same_date_missing', 'isolated_missing')
+
+    matched_timestamps = set()
+    matched_dates = set()
+    for paired_list in matched_pairs_by_type.values():
+        for backup_rel, after_rel in paired_list:
+            for rel in (backup_rel, after_rel):
+                timestamp_prefix = _timestamp_prefix_for_rel_path(rel)
+                if timestamp_prefix:
+                    matched_timestamps.add(timestamp_prefix)
+                date_prefix = _date_prefix_for_rel_path(rel)
+                if date_prefix:
+                    matched_dates.add(date_prefix)
+
+    opposite_side_dates = set()
+    for rel in opposite_side_rel_paths:
+        date_prefix = _date_prefix_for_rel_path(rel)
+        if date_prefix:
+            opposite_side_dates.add(date_prefix)
+
+    buckets = {name: [] for name in category_names}
+    for rel in unmatched_rel_paths:
+        timestamp_prefix = _timestamp_prefix_for_rel_path(rel)
+        date_prefix = _date_prefix_for_rel_path(rel)
+        if timestamp_prefix and timestamp_prefix in matched_timestamps:
+            buckets[category_names[0]].append(rel)
+        elif date_prefix and (date_prefix in matched_dates or date_prefix in opposite_side_dates):
+            buckets[category_names[1]].append(rel)
+        else:
+            buckets[category_names[2]].append(rel)
+    return buckets
+
+
+def _empty_per_year_row():
+    return {
+        'before': 0,
+        'after': 0,
+        'matched': 0,
+        'same_timestamp_extra': 0,
+        'same_date_extra': 0,
+        'isolated_extra': 0,
+        'same_timestamp_missing': 0,
+        'same_date_missing': 0,
+        'isolated_missing': 0,
+    }
+
+
+def build_per_year_breakdown(before, after, matched_pairs_by_type,
+                             only_in_after_by_reason, only_in_before_by_reason):
+    """Build ``{year: {before, after, matched, *_extra, *_missing}}`` so each year
+    can be shown side-by-side with deltas and the categorized leftovers."""
+    per_year = {}
+
+    for rel in before:
+        year = _year_for_rel_path(rel)
+        per_year.setdefault(year, _empty_per_year_row())['before'] += 1
+    for rel in after:
+        year = _year_for_rel_path(rel)
+        per_year.setdefault(year, _empty_per_year_row())['after'] += 1
+
+    for paired_list in matched_pairs_by_type.values():
+        for backup_rel, after_rel in paired_list:
+            # The two halves of a pair are almost always the same year, but be defensive:
+            # count the year of the backup side (the "before" perspective).
+            year = _year_for_rel_path(backup_rel) or _year_for_rel_path(after_rel)
+            per_year.setdefault(year, _empty_per_year_row())['matched'] += 1
+
+    for category_name, rels in only_in_after_by_reason.items():
+        for rel in rels:
+            year = _year_for_rel_path(rel)
+            per_year.setdefault(year, _empty_per_year_row())[category_name] += 1
+    for category_name, rels in only_in_before_by_reason.items():
+        for rel in rels:
+            year = _year_for_rel_path(rel)
+            per_year.setdefault(year, _empty_per_year_row())[category_name] += 1
+
+    return per_year
+
+
+def _log_sample(level, header, items, formatter, console_cap=30):
+    """Console (INFO+) sees the first ``console_cap`` entries plus an
+    "...and N more" summary; the log file (DEBUG+) gets every entry. Run
+    ``grep -F`` on the log file when you want the exhaustive list."""
     if not items:
         return
     logger.log(level, "")
     logger.log(level, header)
-    for item in items[:cap]:
-        logger.log(level, "  %s", formatter(item))
-    if len(items) > cap:
-        logger.log(level, "  ... and %d more", len(items) - cap)
+    for index, item in enumerate(items):
+        if index < console_cap:
+            logger.log(level, "  %s", formatter(item))
+        else:
+            # DEBUG goes to the file handler only — full list lands on disk.
+            logger.debug("  %s", formatter(item))
+    if len(items) > console_cap:
+        logger.log(level, "  ... and %d more (full list in compare_libraries.log)",
+                   len(items) - console_cap)
+
+
+def _log_per_year_table(per_year):
+    """Side-by-side per-year tally so the user can immediately see which years
+    are imbalanced and why — same_timestamp_extra/missing usually means duplicate
+    copies, same_date means a sibling photo on the same day, isolated means a
+    photo with no counterpart on its date at all."""
+    if not per_year:
+        return
+    logger.info("")
+    logger.info("PER-YEAR BREAKDOWN")
+    logger.info("=" * 100)
+    header = (
+        f"{'Year':<8}{'Before':>8}{'After':>8}{'Delta':>8}{'Matched':>10}"
+        f"{'B-only':>8}{'B-tsM':>8}{'B-dtM':>8}{'B-isoM':>8}"
+        f"{'A-tsX':>8}{'A-dtX':>8}{'A-isoX':>8}"
+    )
+    logger.info(header)
+    logger.info("-" * len(header))
+    for year in sorted(per_year):
+        row = per_year[year]
+        delta = row['after'] - row['before']
+        b_only = row['same_timestamp_missing'] + row['same_date_missing'] + row['isolated_missing']
+        logger.info(
+            f"{year:<8}{row['before']:>8}{row['after']:>8}{delta:>+8}{row['matched']:>10}"
+            f"{b_only:>8}{row['same_timestamp_missing']:>8}{row['same_date_missing']:>8}{row['isolated_missing']:>8}"
+            f"{row['same_timestamp_extra']:>8}{row['same_date_extra']:>8}{row['isolated_extra']:>8}"
+        )
+    logger.info("")
+    logger.info("Column key:")
+    logger.info("  B-tsM  same_timestamp_missing — Before has a file whose timestamp matches a paired After file (likely an extra copy on Before)")
+    logger.info("  B-dtM  same_date_missing      — Before file whose date appears on After but the exact time does not")
+    logger.info("  B-isoM isolated_missing       — Before file whose date does not appear on After at all (data loss?)")
+    logger.info("  A-tsX  same_timestamp_extra   — After has a file whose timestamp matches a paired Before file (likely an extra copy on After)")
+    logger.info("  A-dtX  same_date_extra        — After file whose date appears on Before but the exact time does not")
+    logger.info("  A-isoX isolated_extra         — After file whose date does not appear on Before at all (post-takeout addition?)")
 
 
 def report(result, before_count, after_count):
@@ -280,7 +483,10 @@ def report(result, before_count, after_count):
     only_in_before = result['only_in_before']
     only_in_after = result['only_in_after']
     size_anomalies = result['size_anomalies']
-    transcodes_missing_soft_delete = result['transcodes_missing_soft_delete']
+    transcodes_missing_soft_delete = result.get('transcodes_missing_soft_delete', [])
+    per_year_breakdown = result.get('per_year_breakdown', {})
+    only_in_after_by_reason = result.get('only_in_after_by_reason', {})
+    only_in_before_by_reason = result.get('only_in_before_by_reason', {})
 
     logger.info("")
     logger.info("=" * 72)
@@ -302,7 +508,7 @@ def report(result, before_count, after_count):
     logger.info("  only in AFTER  (additions or unexplained):  %d", len(only_in_after))
     logger.info("Size anomalies (>%d KB, non-transcode):       %d",
                 SIZE_TOLERANCE_BYTES // 1024, len(size_anomalies))
-    logger.info("Transcodes missing soft-delete backup:        %d",
+    logger.info("Transcodes with no soft-deleted original:     %d",
                 len(transcodes_missing_soft_delete))
 
     _log_sample(
@@ -325,18 +531,34 @@ def report(result, before_count, after_count):
     )
     _log_sample(
         logging.WARNING,
-        "Transcodes whose soft-deleted original is missing (data loss?):",
+        "Transcodes WITHOUT a soft-deleted original under _Inbox/removed_*/:",
         transcodes_missing_soft_delete,
-        lambda x: f"{x[0]} -> {x[1]} (no copy in _Inbox/removed_*/)",
+        lambda x: f"! {x}",
     )
 
-    clean = not (only_in_before or only_in_after or size_anomalies
-                 or transcodes_missing_soft_delete)
+    _log_per_year_table(per_year_breakdown)
+
+    if only_in_after_by_reason:
+        logger.info("")
+        logger.info("UNMATCHED AFTER-SIDE FILES BY REASON")
+        logger.info("-" * 72)
+        for category_name in ('same_timestamp_extra', 'same_date_extra', 'isolated_extra'):
+            logger.info("  %-25s %d", category_name, len(only_in_after_by_reason.get(category_name, [])))
+    if only_in_before_by_reason:
+        logger.info("")
+        logger.info("UNMATCHED BEFORE-SIDE FILES BY REASON")
+        logger.info("-" * 72)
+        for category_name in ('same_timestamp_missing', 'same_date_missing', 'isolated_missing'):
+            logger.info("  %-25s %d", category_name, len(only_in_before_by_reason.get(category_name, [])))
+
+    clean = not (only_in_before or only_in_after or size_anomalies or transcodes_missing_soft_delete)
     logger.info("")
     if clean:
         logger.info("VERDICT: every file in BEFORE accounted for; no surprises in AFTER.")
     else:
         logger.warning("VERDICT: review the anomalies above before trusting the migration.")
+        logger.warning("Per-pair decisions are in the DEBUG log: "
+                       "logs/compare_libraries.log")
 
 
 def main(before_root, after_root):

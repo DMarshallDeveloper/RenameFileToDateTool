@@ -432,5 +432,17 @@ def main(master_root: str = MASTER_ROOT):
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Audit a master-style photo library for filename/EXIF/structure drift (read-only)."
+    )
+    parser.add_argument(
+        "--root",
+        help="Library root to audit. Defaults to MASTER_ROOT in photo_lib/config.py. "
+             "Useful for auditing a working copy before promoting it to master."
+    )
+    args = parser.parse_args()
+
     configure_logging("audit_master")
-    main()
+    main(args.root) if args.root else main()

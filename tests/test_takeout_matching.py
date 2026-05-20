@@ -71,6 +71,14 @@ class TestInferMediaFilenameFromJson(unittest.TestCase):
         result = takeout.infer_media_filename_from_json("video.MOV.json")
         self.assertEqual(result, "video.MOV")
 
+    def test_webp_extension_recognised(self):
+        # Google Photos sometimes exports WebP. The MEDIA_EXTENSIONS regex must
+        # cover it or the JSON↔media match silently fails.
+        self.assertEqual(
+            takeout.infer_media_filename_from_json("IMG_4242.webp.supplemental-metadata.json"),
+            "IMG_4242.webp",
+        )
+
 
 class TestFindMatchingMedia(unittest.TestCase):
     """find_matching_media_for_json is the orchestrator: try the inferred-name
@@ -129,48 +137,108 @@ class TestFindMatchingMedia(unittest.TestCase):
         self.assertEqual(match, "IMG_999.MOV")
 
 
-class TestGenerateUniqueFilename(unittest.TestCase):
-    """generate_unique_filename is the destination-naming logic. Always appends
+class TestPlanDestinationFilename(unittest.TestCase):
+    """plan_destination_filename is the destination-naming logic. Always appends
     ``_N`` (matching the rest of the codebase's convention), and advances N to
     avoid both existing-on-disk files AND not-yet-written planned files in the
-    current run (so two photos with identical timestamps get _1 and _2 even
-    before the first copy actually completes)."""
+    current run. Critically, it also content-hashes the source against existing
+    destination files with the same base timestamp — re-running the ingest must
+    be idempotent, not allocate fresh _3, _4, … alongside the original _1, _2."""
+
+    def setUp(self):
+        import tempfile
+        self.destination = tempfile.mkdtemp(prefix='plan_dst_')
+        self.source = tempfile.mkdtemp(prefix='plan_src_')
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.destination, ignore_errors=True)
+        shutil.rmtree(self.source, ignore_errors=True)
+
+    def _write_source(self, name: str, content: bytes) -> str:
+        path = os.path.join(self.source, name)
+        with open(path, 'wb') as handle:
+            handle.write(content)
+        return path
 
     def test_first_file_gets_suffix_1(self):
-        # Even when no collision, the script always appends _N — see docstring on
-        # generate_unique_filename. This matches main.py's rename convention.
-        import tempfile, shutil
-        tmp = tempfile.mkdtemp()
-        try:
-            result = takeout.generate_unique_filename(tmp, "2026-04-09 19.52.51", ".jpg", set())
-            self.assertEqual(result, "2026-04-09 19.52.51_1.jpg")
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+        source = self._write_source('a.jpg', b'first')
+        filename, status = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpg", source,
+            set(), takeout.build_destination_index(self.destination), {},
+        )
+        self.assertEqual(filename, "2026-04-09 19.52.51_1.jpg")
+        self.assertEqual(status, "allocated")
 
-    def test_collision_with_existing_file_advances_counter(self):
-        import tempfile, shutil
-        tmp = tempfile.mkdtemp()
-        try:
-            with open(os.path.join(tmp, "2026-04-09 19.52.51_1.jpg"), "w") as f:
-                f.write("")
-            result = takeout.generate_unique_filename(tmp, "2026-04-09 19.52.51", ".jpg", set())
-            self.assertEqual(result, "2026-04-09 19.52.51_2.jpg")
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+    def test_collision_with_different_content_advances_counter(self):
+        # An existing destination file with the same base but different content
+        # is a real collision — bump the counter, do not skip.
+        with open(os.path.join(self.destination, "2026-04-09 19.52.51_1.jpg"), 'wb') as f:
+            f.write(b'something_else')
+        source = self._write_source('a.jpg', b'fresh content')
+        filename, status = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpg", source,
+            set(), takeout.build_destination_index(self.destination), {},
+        )
+        self.assertEqual(filename, "2026-04-09 19.52.51_2.jpg")
+        self.assertEqual(status, "allocated")
 
     def test_planned_names_block_reuse(self):
-        # Two media files with the same timestamp need distinct suffixes even before
-        # either has been copied to disk yet.
-        import tempfile, shutil
-        tmp = tempfile.mkdtemp()
-        try:
-            planned = set()
-            a = takeout.generate_unique_filename(tmp, "2026-04-09 19.52.51", ".jpg", planned)
-            b = takeout.generate_unique_filename(tmp, "2026-04-09 19.52.51", ".jpg", planned)
-            self.assertEqual(a, "2026-04-09 19.52.51_1.jpg")
-            self.assertEqual(b, "2026-04-09 19.52.51_2.jpg")
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+        # Two distinct source files with the same timestamp need distinct suffixes
+        # even before either has been copied to disk yet.
+        source_a = self._write_source('a.jpg', b'aaaa')
+        source_b = self._write_source('b.jpg', b'bbbb')
+        planned_names = set()
+        planned_hashes: dict = {}
+        index = takeout.build_destination_index(self.destination)
+        first_name, _ = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpg", source_a,
+            planned_names, index, planned_hashes,
+        )
+        second_name, _ = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpg", source_b,
+            planned_names, index, planned_hashes,
+        )
+        self.assertEqual(first_name, "2026-04-09 19.52.51_1.jpg")
+        self.assertEqual(second_name, "2026-04-09 19.52.51_2.jpg")
+
+    def test_existing_destination_with_same_content_is_skipped(self):
+        # The bug fix: an existing destination file with identical content must
+        # be detected as a duplicate and skipped, not get a new counter.
+        content = b'this is the same content'
+        with open(os.path.join(self.destination, "2026-04-09 19.52.51_1.jpg"), 'wb') as f:
+            f.write(content)
+        source = self._write_source('different_name.jpg', content)
+        filename, status = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpg", source,
+            set(), takeout.build_destination_index(self.destination), {},
+        )
+        self.assertIsNone(filename)
+        self.assertTrue(status.startswith("skipped_existing:"), status)
+        self.assertIn("2026-04-09 19.52.51_1.jpg", status)
+
+    def test_duplicate_within_same_run_is_skipped(self):
+        # Two source files in the same run with identical content + timestamp
+        # should produce one destination file, not two.
+        content = b'identical bytes'
+        source_a = self._write_source('a.jpg', content)
+        source_b = self._write_source('b.jpg', content)
+        planned_names: set = set()
+        planned_hashes: dict = {}
+        index = takeout.build_destination_index(self.destination)
+        first_name, first_status = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpg", source_a,
+            planned_names, index, planned_hashes,
+        )
+        second_name, second_status = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpg", source_b,
+            planned_names, index, planned_hashes,
+        )
+        self.assertEqual(first_status, "allocated")
+        self.assertEqual(first_name, "2026-04-09 19.52.51_1.jpg")
+        self.assertIsNone(second_name)
+        self.assertTrue(second_status.startswith("skipped_planned:"), second_status)
+        self.assertIn("2026-04-09 19.52.51_1.jpg", second_status)
 
 
 class TestLivePhotoPairingFallback(unittest.TestCase):
@@ -257,6 +325,84 @@ class TestEndToEndCopyWithGeo(unittest.TestCase):
         takeout.process_and_copy_media_files(self.source, self.destination, dry_run=False)
         produced = [f for f in os.listdir(self.destination) if f.lower().endswith('.jpg')]
         self.assertEqual(produced, ['2026-04-09 21.52.51_1.jpg'])
+
+    def test_multiple_source_folders_into_one_destination(self):
+        # Two source folders, each with its own JSON+media. Their content is distinct
+        # and their timestamps differ — should produce two destination files.
+        import json as _json, tempfile, shutil
+        extra_source = tempfile.mkdtemp(prefix='takeout_extra_src_')
+        try:
+            with open(os.path.join(self.source, 'IMG_AAA.JPG'), 'wb') as media_file:
+                media_file.write(b'aaaa_bytes')
+            with open(os.path.join(self.source, 'IMG_AAA.JPG.json'), 'w') as json_file:
+                _json.dump({"photoTakenTime": {"timestamp": "1775728371"}}, json_file)
+            with open(os.path.join(extra_source, 'IMG_BBB.JPG'), 'wb') as media_file:
+                media_file.write(b'bbbb_bytes_distinct')
+            with open(os.path.join(extra_source, 'IMG_BBB.JPG.json'), 'w') as json_file:
+                # 1775728381 = 10 seconds later → distinct timestamp
+                _json.dump({"photoTakenTime": {"timestamp": "1775728381"}}, json_file)
+
+            takeout.process_and_copy_media_files(
+                [self.source, extra_source], self.destination, dry_run=False,
+            )
+
+            produced = sorted(
+                f for f in os.listdir(self.destination) if f.lower().endswith('.jpg')
+            )
+            self.assertEqual(produced, [
+                '2026-04-09 21.52.51_1.jpg',
+                '2026-04-09 21.53.01_1.jpg',
+            ])
+        finally:
+            shutil.rmtree(extra_source, ignore_errors=True)
+
+    def test_multiple_source_folders_dedup_across_sources(self):
+        # Two source folders, same timestamp, identical content — should produce ONE file.
+        import json as _json, tempfile, shutil
+        extra_source = tempfile.mkdtemp(prefix='takeout_extra_src_')
+        try:
+            identical_bytes = b'these bytes appear in both sources'
+            with open(os.path.join(self.source, 'IMG_A.JPG'), 'wb') as media_file:
+                media_file.write(identical_bytes)
+            with open(os.path.join(self.source, 'IMG_A.JPG.json'), 'w') as json_file:
+                _json.dump({"photoTakenTime": {"timestamp": "1775728371"}}, json_file)
+            with open(os.path.join(extra_source, 'IMG_B.JPG'), 'wb') as media_file:
+                media_file.write(identical_bytes)
+            with open(os.path.join(extra_source, 'IMG_B.JPG.json'), 'w') as json_file:
+                _json.dump({"photoTakenTime": {"timestamp": "1775728371"}}, json_file)
+
+            takeout.process_and_copy_media_files(
+                [self.source, extra_source], self.destination, dry_run=False,
+            )
+
+            produced = sorted(
+                f for f in os.listdir(self.destination) if f.lower().endswith('.jpg')
+            )
+            self.assertEqual(produced, ['2026-04-09 21.52.51_1.jpg'])
+        finally:
+            shutil.rmtree(extra_source, ignore_errors=True)
+
+    def test_rerunning_does_not_duplicate_files(self):
+        # Reproduces the bug: running the script twice on the same source folder
+        # used to leave _1, _2 from the first run plus _3, _4 from the second run.
+        # With content-aware dedup it should leave exactly the original _1, _2.
+        self._seed('IMG_A.JPG', {"photoTakenTime": {"timestamp": "1775728371"}})
+        self._seed('IMG_B.JPG', {"photoTakenTime": {"timestamp": "1775728371"}})
+        # Force a true content difference between the two photos, since _seed
+        # writes identical bytes by default and dedup would collapse them.
+        with open(os.path.join(self.source, 'IMG_B.JPG'), 'wb') as handle:
+            handle.write(b'different media bytes')
+
+        takeout.process_and_copy_media_files(self.source, self.destination, dry_run=False)
+        takeout.process_and_copy_media_files(self.source, self.destination, dry_run=False)
+
+        produced_media = sorted(
+            f for f in os.listdir(self.destination) if f.lower().endswith('.jpg')
+        )
+        self.assertEqual(produced_media, [
+            '2026-04-09 21.52.51_1.jpg',
+            '2026-04-09 21.52.51_2.jpg',
+        ])
 
 
 if __name__ == '__main__':

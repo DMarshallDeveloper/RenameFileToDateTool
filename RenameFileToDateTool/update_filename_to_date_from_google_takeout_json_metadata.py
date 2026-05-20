@@ -27,6 +27,7 @@ library's ``_Inbox`` for ingestion via ``ingest_inbox_to_master.py``.
 """
 
 import bisect
+import hashlib
 import json
 import logging
 import os
@@ -50,20 +51,108 @@ MEDIA_EXTENSIONS = "|".join(sorted(_MEDIA_EXT_SET))
 
 DUPLICATE_SUFFIX_RE = re.compile(r"(?:\((\d+)\)|_(\d+))$", re.IGNORECASE)
 REAL_EXTENSION_RE = re.compile(rf"^(.*?\.({MEDIA_EXTENSIONS}))", re.IGNORECASE)
+CANONICAL_FILENAME_RE = re.compile(
+    r"^(?P<base>\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2})_\d+(?P<ext>\.[A-Za-z0-9]+)$"
+)
 
 
-def generate_unique_filename(output_folder: str, base_name: str, extension: str, planned_names: set) -> str:
-    """Return a filename in the master library's format: '<base_name>_<N><extension>'.
+def hash_file(file_path: str, chunk_size: int = 1024 * 1024) -> str:
+    """Return the SHA-256 hex digest of a file, streamed in chunks."""
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
 
-    Always includes an _N suffix starting at 1, matching the canonical convention, so every file
-    in the master library has the same shape regardless of whether the timestamp is unique.
+
+def build_destination_index(destination_folder: str) -> dict[tuple[str, str], list[tuple[str, int]]]:
+    """Group existing destination files by (base_timestamp, lowercase_extension).
+
+    Used by plan_destination_filename to find candidates that might be content-duplicates
+    of a fresh source file. Returns a dict keyed by (base, ext) -> list of (filename, size),
+    so the planner can size-filter cheaply before hashing.
     """
+    index: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    if not os.path.isdir(destination_folder):
+        return index
+    for entry in os.scandir(destination_folder):
+        if not entry.is_file():
+            continue
+        match = CANONICAL_FILENAME_RE.match(entry.name)
+        if not match:
+            continue
+        try:
+            size = entry.stat().st_size
+        except OSError:
+            continue
+        key = (match.group("base"), match.group("ext").lower())
+        index.setdefault(key, []).append((entry.name, size))
+    return index
+
+
+def plan_destination_filename(
+    output_folder: str,
+    base_name: str,
+    extension: str,
+    source_path: str,
+    planned_names: set,
+    existing_destination_index: dict[tuple[str, str], list[tuple[str, int]]],
+    planned_hashes_by_base: dict[tuple[str, str], dict[str, str]],
+) -> tuple[str | None, str]:
+    """Choose a destination filename for source_path, or return None if it's already there.
+
+    Returns (filename, status). status is one of:
+      - "allocated"                — fresh slot; filename is '<base>_<N><ext>' and the
+                                     caller should perform the copy.
+      - "skipped_existing:<name>"  — destination already contains a file with the same
+                                     base timestamp and identical content.
+      - "skipped_planned:<name>"   — another source file in THIS run with the same base
+                                     timestamp had identical content and is already planned.
+
+    Skip detection is content-based: same base timestamp + same byte size, then SHA-256
+    hash comparison. This makes re-running the ingest idempotent — previously the script
+    only checked filenames, so a re-run silently allocated _3, _4, … alongside the original
+    _1, _2.
+    """
+    key = (base_name, extension.lower())
+    source_hash: str | None = None
+
+    planned_for_key = planned_hashes_by_base.get(key)
+    if planned_for_key:
+        source_hash = hash_file(source_path)
+        existing_planned_name = planned_for_key.get(source_hash)
+        if existing_planned_name is not None:
+            return None, f"skipped_planned:{existing_planned_name}"
+
+    try:
+        source_size = os.path.getsize(source_path)
+    except OSError:
+        source_size = -1
+
+    for existing_filename, existing_size in existing_destination_index.get(key, []):
+        if existing_size != source_size:
+            continue
+        if source_hash is None:
+            source_hash = hash_file(source_path)
+        existing_path = os.path.join(output_folder, existing_filename)
+        try:
+            existing_hash = hash_file(existing_path)
+        except OSError:
+            continue
+        if existing_hash == source_hash:
+            return None, f"skipped_existing:{existing_filename}"
+
+    if source_hash is None:
+        source_hash = hash_file(source_path)
+
     counter = 1
     while True:
         candidate_name = f"{base_name}_{counter}{extension}"
         if not os.path.exists(os.path.join(output_folder, candidate_name)) and candidate_name not in planned_names:
             planned_names.add(candidate_name)
-            return candidate_name
+            planned_hashes_by_base.setdefault(key, {})[source_hash] = candidate_name
+            existing_destination_index.setdefault(key, []).append((candidate_name, source_size))
+            return candidate_name, "allocated"
         counter += 1
 
 
@@ -148,46 +237,48 @@ def find_matching_media_for_json(
     return None, "no_match"
 
 
-def process_and_copy_media_files(source_folder: str, destination_folder: str, dry_run: bool = False) -> None:
-    """Copy media files from source_folder to destination_folder using timestamps from JSON metadata.
+def _plan_copies_for_source(source_folder: str, destination_folder: str, dry_run: bool, shared: dict) -> None:
+    """Plan copies for one source folder, mutating ``shared`` planning state.
 
-    Matching and planning is done sequentially, then all copies run in parallel.
-    When dry_run is True, only prints what would be done.
+    Shared state is built once by ``process_and_copy_media_files`` so dedup,
+    counter allocation, and copy queueing span every source folder in the run.
+    Live-Photo pairing stays per-folder because the HEIC/MP4 pair is always
+    co-located in the same Takeout subfolder.
     """
-    if not source_folder or not destination_folder:
-        logger.error("Source or destination folder not selected.")
-        return
-
-    os.makedirs(destination_folder, exist_ok=True)
+    source_label = os.path.basename(source_folder.rstrip(os.sep)) or source_folder
 
     entries = os.listdir(source_folder)
     metadata_json_filenames = [f for f in entries if f.lower().endswith(".json")]
     media_filenames = [f for f in entries if not f.lower().endswith(".json")]
 
-    # Pre-build lookup structures once
     media_lower_map = {f.lower(): f for f in media_filenames}
     sorted_lower = sorted(media_lower_map.keys())
 
-    matched_media_files = set()
-    unmatched_json_file_list = []
     unmatched_media_file_set = set(media_filenames)
-    match_report = {}
-    copy_ops = []  # (source_path, destination_path) collected for parallel execution
-    base_name_to_datetime = {}  # lowercase stem -> datetime, for Live Photo pairing fallback
-    planned_destination_names = set()  # tracks names already allocated to prevent same-timestamp collisions
+    base_name_to_datetime = {}  # lowercase stem -> datetime, for Live Photo pairing fallback (per-folder)
+
+    match_report = shared["match_report"]
+    unmatched_json_file_list = shared["unmatched_json_file_list"]
+    copy_ops = shared["copy_ops"]
+    planned_destination_names = shared["planned_destination_names"]
+    existing_destination_index = shared["existing_destination_index"]
+    planned_hashes_by_base = shared["planned_hashes_by_base"]
+
+    shared["total_metadata_processed"] += len(metadata_json_filenames)
 
     for metadata_filename in metadata_json_filenames:
         json_file_path = os.path.join(source_folder, metadata_filename)
-        logger.debug("Processing JSON file: %s", metadata_filename)
+        report_key = f"{source_label}/{metadata_filename}"
+        logger.debug("Processing JSON file: %s", report_key)
 
         try:
             with open(json_file_path, "r") as json_file:
                 metadata = json.load(json_file)
 
             if "photoTakenTime" not in metadata:
-                logger.warning("No 'photoTakenTime' found in %s", metadata_filename)
-                unmatched_json_file_list.append(metadata_filename)
-                match_report[metadata_filename] = (None, "no_timestamp")
+                logger.warning("No 'photoTakenTime' found in %s", report_key)
+                unmatched_json_file_list.append(report_key)
+                match_report[report_key] = (None, "no_timestamp")
                 continue
 
             matched_media_filename, method_used = find_matching_media_for_json(
@@ -198,60 +289,153 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
                 local_datetime = local_datetime_from_metadata(metadata)
                 timestamped_base_name = local_datetime.strftime("%Y-%m-%d %H.%M.%S")
                 extension = os.path.splitext(matched_media_filename)[1].lower()
-
-                unique_new_filename = generate_unique_filename(destination_folder, timestamped_base_name, extension, planned_destination_names)
                 source_media_path = os.path.join(source_folder, matched_media_filename)
+
+                unique_new_filename, plan_status = plan_destination_filename(
+                    destination_folder,
+                    timestamped_base_name,
+                    extension,
+                    source_media_path,
+                    planned_destination_names,
+                    existing_destination_index,
+                    planned_hashes_by_base,
+                )
+
+                if unique_new_filename is None:
+                    shared["skipped_duplicate_count"] += 1
+                    logger.info("Skipping duplicate: %s already at destination as %s (method: %s)",
+                                f"{source_label}/{matched_media_filename}",
+                                plan_status.split(":", 1)[1], method_used)
+                    shared["matched_media_files"].add(f"{source_label}/{matched_media_filename}")
+                    unmatched_media_file_set.discard(matched_media_filename)
+                    match_report[report_key] = (matched_media_filename, f"{method_used}|{plan_status}")
+                    base_name_to_datetime[os.path.splitext(matched_media_filename)[0].lower()] = local_datetime
+                    continue
+
                 destination_media_path = os.path.join(destination_folder, unique_new_filename)
 
                 if dry_run:
                     logger.info("[DRY RUN] Would copy: %s -> %s (method: %s)",
-                                matched_media_filename, unique_new_filename, method_used)
+                                f"{source_label}/{matched_media_filename}",
+                                unique_new_filename, method_used)
                 else:
                     copy_ops.append((source_media_path, destination_media_path))
                     logger.info("Matched: %s -> %s (method: %s)",
-                                matched_media_filename, unique_new_filename, method_used)
+                                f"{source_label}/{matched_media_filename}",
+                                unique_new_filename, method_used)
 
-                matched_media_files.add(matched_media_filename)
+                shared["matched_media_files"].add(f"{source_label}/{matched_media_filename}")
                 unmatched_media_file_set.discard(matched_media_filename)
-                match_report[metadata_filename] = (matched_media_filename, method_used)
+                match_report[report_key] = (matched_media_filename, method_used)
                 base_name_to_datetime[os.path.splitext(matched_media_filename)[0].lower()] = local_datetime
 
             else:
-                logger.warning("No matching media file found for %s", metadata_filename)
-                unmatched_json_file_list.append(metadata_filename)
-                match_report[metadata_filename] = (None, "no_match")
+                logger.warning("No matching media file found for %s", report_key)
+                unmatched_json_file_list.append(report_key)
+                match_report[report_key] = (None, "no_match")
 
         except Exception as error:
-            logger.error("Error processing %s: %s", metadata_filename, error)
-            unmatched_json_file_list.append(metadata_filename)
-            match_report[metadata_filename] = (None, f"error: {error}")
+            logger.error("Error processing %s: %s", report_key, error)
+            unmatched_json_file_list.append(report_key)
+            match_report[report_key] = (None, f"error: {error}")
 
     # Second pass: match orphaned Live Photo videos (e.g. IMG_3118.MP4) using their
     # companion photo's already-matched timestamp (e.g. from IMG_3118.HEIC.supplemental-metadata.json)
-    live_photo_matched = 0
     for media_filename in list(unmatched_media_file_set):
         base = os.path.splitext(media_filename)[0].lower()
         if base in base_name_to_datetime:
             local_datetime = base_name_to_datetime[base]
             timestamped_base_name = local_datetime.strftime("%Y-%m-%d %H.%M.%S")
             extension = os.path.splitext(media_filename)[1].lower()
-            unique_new_filename = generate_unique_filename(destination_folder, timestamped_base_name, extension, planned_destination_names)
             source_media_path = os.path.join(source_folder, media_filename)
+            tagged_media_label = f"{source_label}/{media_filename}"
+
+            unique_new_filename, plan_status = plan_destination_filename(
+                destination_folder,
+                timestamped_base_name,
+                extension,
+                source_media_path,
+                planned_destination_names,
+                existing_destination_index,
+                planned_hashes_by_base,
+            )
+
+            if unique_new_filename is None:
+                shared["skipped_duplicate_count"] += 1
+                logger.info("Skipping duplicate: %s already at destination as %s (method: live_photo_pairing)",
+                            tagged_media_label, plan_status.split(":", 1)[1])
+                shared["matched_media_files"].add(tagged_media_label)
+                unmatched_media_file_set.discard(media_filename)
+                match_report[tagged_media_label] = (media_filename, f"live_photo_pairing|{plan_status}")
+                shared["live_photo_matched"] += 1
+                continue
+
             destination_media_path = os.path.join(destination_folder, unique_new_filename)
             if dry_run:
                 logger.info("[DRY RUN] Would copy: %s -> %s (method: live_photo_pairing)",
-                            media_filename, unique_new_filename)
+                            tagged_media_label, unique_new_filename)
             else:
                 copy_ops.append((source_media_path, destination_media_path))
                 logger.info("Matched: %s -> %s (method: live_photo_pairing)",
-                            media_filename, unique_new_filename)
-            matched_media_files.add(media_filename)
+                            tagged_media_label, unique_new_filename)
+            shared["matched_media_files"].add(tagged_media_label)
             unmatched_media_file_set.discard(media_filename)
-            match_report[media_filename] = (media_filename, "live_photo_pairing")
-            live_photo_matched += 1
+            match_report[tagged_media_label] = (media_filename, "live_photo_pairing")
+            shared["live_photo_matched"] += 1
 
-    if live_photo_matched:
-        logger.info("Live Photo pairing matched %d additional media files.", live_photo_matched)
+    # Hand any still-unmatched media filenames (per this source) up to shared state, tagged.
+    for media_filename in unmatched_media_file_set:
+        shared["unmatched_media_file_list"].append(f"{source_label}/{media_filename}")
+
+
+def process_and_copy_media_files(source_folders, destination_folder: str, dry_run: bool = False) -> None:
+    """Copy media files from one or more source folders into one destination.
+
+    ``source_folders`` accepts either a single folder string (back-compat) or a list of
+    folder strings. The dedup index, counter allocation, and copy queue are shared across
+    every source, so a file repeated across folders is copied only once.
+
+    Matching and planning are done sequentially per source; all copies then run in parallel.
+    """
+    if isinstance(source_folders, str):
+        source_folders = [source_folders]
+    source_folders = [f for f in (source_folders or []) if f]
+
+    if not source_folders or not destination_folder:
+        logger.error("Source or destination folder not selected.")
+        return
+
+    os.makedirs(destination_folder, exist_ok=True)
+
+    shared = {
+        "match_report": {},
+        "unmatched_json_file_list": [],
+        "unmatched_media_file_list": [],
+        "matched_media_files": set(),
+        "copy_ops": [],
+        "planned_destination_names": set(),
+        "existing_destination_index": build_destination_index(destination_folder),
+        "planned_hashes_by_base": {},
+        "skipped_duplicate_count": 0,
+        "live_photo_matched": 0,
+        "total_metadata_processed": 0,
+    }
+
+    for source_folder in source_folders:
+        if not os.path.isdir(source_folder):
+            logger.warning("Source folder does not exist, skipping: %s", source_folder)
+            continue
+        logger.info("Processing source folder: %s", source_folder)
+        _plan_copies_for_source(source_folder, destination_folder, dry_run, shared)
+
+    match_report = shared["match_report"]
+    unmatched_json_file_list = shared["unmatched_json_file_list"]
+    unmatched_media_file_list = shared["unmatched_media_file_list"]
+    copy_ops = shared["copy_ops"]
+
+    if shared["live_photo_matched"]:
+        logger.info("Live Photo pairing matched %d additional media files (across all sources).",
+                    shared["live_photo_matched"])
 
     # Execute all copies in parallel
     if copy_ops:
@@ -281,21 +465,39 @@ def process_and_copy_media_files(source_folder: str, destination_folder: str, dr
                 log_file.write(filename + "\n")
         logger.info("Logged %d unmatched JSON files to: %s", len(unmatched_json_file_list), log_path)
 
-    if unmatched_media_file_set:
+    if unmatched_media_file_list:
         log_path = os.path.join(destination_folder, "unmatched_media_files.txt")
         with open(log_path, "w") as log_file:
-            for filename in unmatched_media_file_set:
+            for filename in unmatched_media_file_list:
                 log_file.write(filename + "\n")
-        logger.info("Logged %d unmatched media files to: %s", len(unmatched_media_file_set), log_path)
+        logger.info("Logged %d unmatched media files to: %s", len(unmatched_media_file_list), log_path)
     else:
         logger.info("All media files had matching metadata.")
 
-    total_processed = len(metadata_json_filenames)
-    total_matched = len(matched_media_files)
-    logger.info("Summary: processed %d JSON metadata files, matched %d media files.",
-                total_processed, total_matched)
+    total_processed = shared["total_metadata_processed"]
+    total_matched = len(shared["matched_media_files"])
+    logger.info("Summary: processed %d JSON metadata files across %d source folder(s), matched %d media files.",
+                total_processed, len(source_folders), total_matched)
+    if shared["skipped_duplicate_count"]:
+        logger.info("Skipped %d media files whose content was already at the destination.",
+                    shared["skipped_duplicate_count"])
     if dry_run:
         logger.info("Note: dry-run mode - no files were actually copied.")
+
+
+def _pick_source_folders_via_dialog() -> list[str]:
+    """Open the Tk folder picker repeatedly until the user cancels, collecting source folders."""
+    from photo_lib.tk_picker import choose_directory
+
+    chosen_source_folders: list[str] = []
+    while True:
+        ordinal_label = "first" if not chosen_source_folders else f"another (#{len(chosen_source_folders) + 1})"
+        next_folder = choose_directory(f"Select {ordinal_label} source folder (cancel when done)")
+        if not next_folder:
+            break
+        chosen_source_folders.append(next_folder)
+        logger.info("Added source folder: %s", next_folder)
+    return chosen_source_folders
 
 
 if __name__ == "__main__":
@@ -305,9 +507,10 @@ if __name__ == "__main__":
         description="Pair Google Takeout JSON sidecars to media files and copy them with canonical names."
     )
     parser.add_argument(
-        "--src",
-        help="Source folder containing Google Photos files (including JSONs). "
-             "If omitted, opens the Tk folder picker."
+        "--src", nargs="+",
+        help="One or more source folders containing Google Photos files (including JSONs). "
+             "Repeat the flag or pass multiple paths after one --src. If omitted, the Tk folder "
+             "picker opens repeatedly until you cancel."
     )
     parser.add_argument(
         "--dst",
@@ -322,16 +525,20 @@ if __name__ == "__main__":
 
     configure_logging("takeout_json_to_filename")
 
-    if not args.src:
-        logger.info("Select the folder containing Google Photos files (including JSONs).")
-    source_folder_selected = resolve_directory(args.src, "Select Source Folder")
+    if args.src:
+        selected_source_folders = args.src
+    else:
+        logger.info("Select one or more source folders (cancel the picker when done).")
+        selected_source_folders = _pick_source_folders_via_dialog()
 
     if not args.dst:
         logger.info("Select the destination folder where renamed files will be saved.")
-    destination_folder_selected = resolve_directory(args.dst, "Select Destination Folder", must_exist=False)
+    selected_destination_folder = resolve_directory(args.dst, "Select Destination Folder", must_exist=False)
 
-    if source_folder_selected and destination_folder_selected:
-        process_and_copy_media_files(source_folder_selected, destination_folder_selected, dry_run=args.dry_run)
+    if selected_source_folders and selected_destination_folder:
+        logger.info("Ingesting %d source folder(s) into %s",
+                    len(selected_source_folders), selected_destination_folder)
+        process_and_copy_media_files(selected_source_folders, selected_destination_folder, dry_run=args.dry_run)
         logger.info("File copying and renaming completed successfully!")
     else:
         logger.info("Operation canceled.")

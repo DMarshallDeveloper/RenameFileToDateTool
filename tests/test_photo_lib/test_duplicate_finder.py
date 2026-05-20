@@ -681,6 +681,55 @@ class TestPlanFinalizeCrossDate(unittest.TestCase):
         self.assertEqual(by_old["2014-06-15 10.00.00_1_b.jpg"],
                          "2014-06-15 10.00.00_2.jpg")
 
+    def test_flat_library_keeps_cross_date_loser_at_root(self):
+        # A library that's flat (no year subfolders) must NOT have year
+        # subfolders synthesized just because a cross-date _b is returning
+        # home — the file stays at the root, alongside the winner.
+        self._touch_in("", "2014-06-15 10.00.00_1_a.jpg")
+        self._touch_in(
+            "",
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg",
+        )
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        by_old = {os.path.basename(old): new for old, new in plan}
+
+        # Both files stay at the root — destination folder == self.tmpdir.
+        self.assertEqual(
+            os.path.dirname(by_old["2014-06-15 10.00.00_1_a.jpg"]),
+            self.tmpdir,
+        )
+        self.assertEqual(
+            os.path.dirname(
+                by_old["2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg"]
+            ),
+            self.tmpdir,
+        )
+        # And the basename of the returning loser uses its origin base.
+        self.assertEqual(
+            os.path.basename(
+                by_old["2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg"]
+            ),
+            "2015-08-20 14.30.00_1.jpg",
+        )
+
+    def test_flat_library_returning_loser_bumps_past_taken_idx_at_root(self):
+        # Flat library: an existing canonical file with the same base at
+        # root claims _1, so the returning loser bumps to _2.
+        self._touch_in("", "2014-06-15 10.00.00_1_a.jpg")
+        self._touch_in(
+            "",
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg",
+        )
+        self._touch_in("", "2015-08-20 14.30.00_1.jpg")
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        by_old = {os.path.basename(old): new for old, new in plan}
+        returned = by_old[
+            "2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg"
+        ]
+        self.assertEqual(os.path.dirname(returned), self.tmpdir)
+        self.assertEqual(os.path.basename(returned),
+                         "2015-08-20 14.30.00_2.jpg")
+
 
 class TestHammingDistance(unittest.TestCase):
     def test_identical_hashes_distance_zero(self):

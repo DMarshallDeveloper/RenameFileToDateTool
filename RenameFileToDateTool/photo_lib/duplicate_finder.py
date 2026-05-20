@@ -496,13 +496,44 @@ def plan_mark(groups: Iterable[DuplicateGroup]) -> list[tuple[str, str, int]]:
     return plan
 
 
-def _target_folder_for_base(root: str, base: str) -> str:
-    """Year folder under ``root`` for a canonical timestamp base.
+def _detect_year_folder_convention(root: str) -> bool:
+    """True iff ``root`` contains at least one year-shaped subfolder.
 
-    Mirrors the convention used by ``ingest_inbox_to_master.target_folder_for_year``:
+    A year-shaped subfolder is one named with a 4-digit year (e.g. ``2014``)
+    or matching ``BUNDLED_EARLY_FOLDER`` ("2000 - 2010"). When the root has
+    none of these, we treat the library as flat — cross-date losers in
+    finalize stay at the root instead of synthesizing a year subfolder
+    where none existed (which would silently restructure the user's library).
+    """
+    if not os.path.isdir(root):
+        return False
+    for name in os.listdir(root):
+        if not os.path.isdir(os.path.join(root, name)):
+            continue
+        if name == BUNDLED_EARLY_FOLDER:
+            return True
+        if len(name) == 4 and name.isdigit():
+            year = int(name)
+            if 1900 <= year <= 2100:
+                return True
+    return False
+
+
+def _target_folder_for_base(root: str, base: str, *,
+                            use_year_folders: bool) -> str:
+    """Destination folder under ``root`` for a canonical timestamp base.
+
+    With ``use_year_folders=True`` (a library that already has year
+    subfolders) this mirrors ``ingest_inbox_to_master.target_folder_for_year``:
     years in the bundled-early range collapse into ``BUNDLED_EARLY_FOLDER``;
     everything else lives in ``<year>``.
+
+    With ``use_year_folders=False`` (a flat library) the root itself is the
+    destination — finalize won't introduce year subfolders into a library
+    that wasn't already using them.
     """
+    if not use_year_folders:
+        return root
     year = int(base[:4])
     if year in BUNDLED_EARLY_YEARS:
         return os.path.join(root, BUNDLED_EARLY_FOLDER)
@@ -538,7 +569,14 @@ def plan_finalize(root: str) -> list[tuple[str, str]]:
     spans folders — necessary because a returning cross-date ``_b`` can
     compete with a same-base ``_b`` overflow for indices in a shared
     destination bucket.
+
+    Year-folder routing for returning cross-date losers respects the
+    convention already in use under ``root``: if year subfolders exist the
+    returning file goes to its appropriate year folder; if the library is
+    flat the file stays at ``root``.
     """
+    use_year_folders = _detect_year_folder_convention(root)
+
     # Phase 1: walk the tree once; collect marked entries and per-folder
     # per-base canonical indices that are already taken.
     marked_entries: list[dict] = []
@@ -595,7 +633,9 @@ def plan_finalize(root: str) -> list[tuple[str, str]]:
                 # Cross-date loser: move back to origin year's folder. The
                 # winner_idx context has no meaning in the destination
                 # bucket — allocate the lowest free idx instead.
-                target_dir = _target_folder_for_base(root, origin_base)
+                target_dir = _target_folder_for_base(
+                    root, origin_base, use_year_folders=use_year_folders,
+                )
                 target_base = origin_base
                 preferred_idx = 1
 

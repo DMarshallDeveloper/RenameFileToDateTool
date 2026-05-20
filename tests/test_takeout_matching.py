@@ -240,6 +240,121 @@ class TestPlanDestinationFilename(unittest.TestCase):
         self.assertTrue(second_status.startswith("skipped_planned:"), second_status)
         self.assertIn("2026-04-09 19.52.51_1.jpg", second_status)
 
+    def test_jpeg_extension_canonicalized_to_jpg(self):
+        # A source ``.jpeg`` lands at the destination as ``.jpg`` — the ingest
+        # consolidates spelling variants so the destination is never mixed.
+        source = self._write_source('IMG_0001.jpeg', b'jpeg-bytes')
+        filename, status = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpeg", source,
+            set(), takeout.build_destination_index(self.destination), {},
+        )
+        self.assertEqual(filename, "2026-04-09 19.52.51_1.jpg")
+        self.assertEqual(status, "allocated")
+
+    def test_uppercase_extension_canonicalized_to_lowercase(self):
+        source = self._write_source('IMG_0001.JPG', b'jpg-bytes')
+        filename, _status = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".JPG", source,
+            set(), takeout.build_destination_index(self.destination), {},
+        )
+        self.assertEqual(filename, "2026-04-09 19.52.51_1.jpg")
+
+    def test_counter_is_global_across_extensions_at_same_base(self):
+        # A .jpg already occupying _1 must block a fresh .mp4 from taking _1 —
+        # the .mp4 lands at _2.mp4. Pre-fix the counter was per-extension and
+        # both could share _1 at the same timestamp.
+        with open(os.path.join(self.destination, "2026-04-09 19.52.51_1.jpg"), 'wb') as f:
+            f.write(b'an_existing_jpg')
+        source = self._write_source('video.mp4', b'an_mp4_video')
+        filename, status = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".mp4", source,
+            set(), takeout.build_destination_index(self.destination), {},
+        )
+        self.assertEqual(filename, "2026-04-09 19.52.51_2.mp4")
+        self.assertEqual(status, "allocated")
+
+    def test_global_counter_works_against_jpeg_already_present(self):
+        # An existing .jpeg in dest (legacy) occupying _1 should block a fresh
+        # .mp4 from claiming _1 — the canonical-extension key catches it.
+        with open(os.path.join(self.destination, "2026-04-09 19.52.51_1.jpeg"), 'wb') as f:
+            f.write(b'legacy_jpeg_in_dest')
+        source = self._write_source('video.mp4', b'fresh_mp4')
+        filename, _status = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".mp4", source,
+            set(), takeout.build_destination_index(self.destination), {},
+        )
+        self.assertEqual(filename, "2026-04-09 19.52.51_2.mp4")
+
+    def test_planned_jpeg_then_jpg_counter_advances(self):
+        # First a .jpeg is planned (canonicalizes to _1.jpg). A second source
+        # file with a real .jpg extension must NOT collide; it gets _2.jpg.
+        source_a = self._write_source('a.jpeg', b'aaaa')
+        source_b = self._write_source('b.jpg', b'bbbb')
+        planned_names: set = set()
+        planned_hashes: dict = {}
+        index = takeout.build_destination_index(self.destination)
+        first_name, _ = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpeg", source_a,
+            planned_names, index, planned_hashes,
+        )
+        second_name, _ = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpg", source_b,
+            planned_names, index, planned_hashes,
+        )
+        self.assertEqual(first_name, "2026-04-09 19.52.51_1.jpg")
+        self.assertEqual(second_name, "2026-04-09 19.52.51_2.jpg")
+
+    def test_jpeg_dedup_against_jpg_with_same_content(self):
+        # If the destination already has _1.jpg with identical content, an
+        # incoming .jpeg with the same bytes must be detected as a duplicate
+        # (canonical-ext key catches it) and skipped.
+        content = b'identical-pixels-different-spelling'
+        with open(os.path.join(self.destination, "2026-04-09 19.52.51_1.jpg"), 'wb') as f:
+            f.write(content)
+        source = self._write_source('IMG.jpeg', content)
+        filename, status = takeout.plan_destination_filename(
+            self.destination, "2026-04-09 19.52.51", ".jpeg", source,
+            set(), takeout.build_destination_index(self.destination), {},
+        )
+        self.assertIsNone(filename)
+        self.assertTrue(status.startswith("skipped_existing:"), status)
+
+
+class TestBuildUsedIndicesByBase(unittest.TestCase):
+    """Verifies the helper that pre-populates _N usage from an existing dest."""
+
+    def setUp(self):
+        import tempfile
+        self.destination = tempfile.mkdtemp(prefix='used_idx_')
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.destination, ignore_errors=True)
+
+    def _touch(self, name: str) -> None:
+        with open(os.path.join(self.destination, name), 'wb') as f:
+            f.write(b'x')
+
+    def test_empty_destination_returns_empty(self):
+        self.assertEqual(takeout.build_used_indices_by_base(self.destination), {})
+
+    def test_collects_indices_across_extensions_per_base(self):
+        self._touch("2026-04-09 19.52.51_1.jpg")
+        self._touch("2026-04-09 19.52.51_2.mp4")
+        self._touch("2026-04-09 19.52.51_5.heic")
+        self._touch("2026-04-10 12.00.00_1.jpg")
+        used = takeout.build_used_indices_by_base(self.destination)
+        self.assertEqual(used, {
+            "2026-04-09 19.52.51": {1, 2, 5},
+            "2026-04-10 12.00.00": {1},
+        })
+
+    def test_skips_non_canonical_files(self):
+        self._touch("random_file.jpg")
+        self._touch("2026-04-09 19.52.51_1.jpg")
+        used = takeout.build_used_indices_by_base(self.destination)
+        self.assertEqual(used, {"2026-04-09 19.52.51": {1}})
+
 
 class TestLivePhotoPairingFallback(unittest.TestCase):
     """A Takeout dump often has IMG_3118.HEIC + IMG_3118.HEIC.supplemental-metadata.json
@@ -275,10 +390,14 @@ class TestLivePhotoPairingFallback(unittest.TestCase):
         takeout.process_and_copy_media_files(self.source, self.destination, dry_run=False)
 
         produced = sorted(f for f in os.listdir(self.destination) if not f.endswith('.json') and not f.endswith('.txt'))
-        # Both files should land with the same base timestamp, different extensions
+        # The orphan MP4 inherits the HEIC's timestamp, but the _N counter is
+        # global across extensions at this base — so the .heic takes _1 and
+        # the .mp4 bumps to _2. (Pre-fix the counter was per-extension and
+        # both could share _1, which made it ambiguous whether they were a
+        # Live Photo pair or two unrelated files at the same instant.)
         self.assertEqual(produced, [
             '2026-04-09 21.52.51_1.heic',
-            '2026-04-09 21.52.51_1.mp4',
+            '2026-04-09 21.52.51_2.mp4',
         ])
 
 

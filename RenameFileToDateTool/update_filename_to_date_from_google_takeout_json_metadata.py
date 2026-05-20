@@ -35,7 +35,10 @@ import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 
-from photo_lib.extensions import MEDIA_EXTENSIONS as _MEDIA_EXT_SET
+from photo_lib.extensions import (
+    MEDIA_EXTENSIONS as _MEDIA_EXT_SET,
+    canonical_extension,
+)
 from photo_lib.logging_setup import configure_logging
 from photo_lib.takeout_geo import (
     DEFAULT_TIMEZONE as NEW_ZEALAND_TIMEZONE,  # back-compat alias for tests
@@ -66,11 +69,13 @@ def hash_file(file_path: str, chunk_size: int = 1024 * 1024) -> str:
 
 
 def build_destination_index(destination_folder: str) -> dict[tuple[str, str], list[tuple[str, int]]]:
-    """Group existing destination files by (base_timestamp, lowercase_extension).
+    """Group existing destination files by (base_timestamp, canonical_extension).
 
     Used by plan_destination_filename to find candidates that might be content-duplicates
-    of a fresh source file. Returns a dict keyed by (base, ext) -> list of (filename, size),
-    so the planner can size-filter cheaply before hashing.
+    of a fresh source file. Returns a dict keyed by (base, canonical_ext) -> list of
+    (filename, size). The key uses the canonical extension (jpeg -> jpg, lower-cased)
+    so a destination ``_1.jpeg`` and an incoming ``.jpeg`` source both look up the
+    same bucket, preventing per-extension counter drift.
     """
     index: dict[tuple[str, str], list[tuple[str, int]]] = {}
     if not os.path.isdir(destination_folder):
@@ -85,9 +90,39 @@ def build_destination_index(destination_folder: str) -> dict[tuple[str, str], li
             size = entry.stat().st_size
         except OSError:
             continue
-        key = (match.group("base"), match.group("ext").lower())
+        key = (match.group("base"), canonical_extension(match.group("ext")))
         index.setdefault(key, []).append((entry.name, size))
     return index
+
+
+def build_used_indices_by_base(destination_folder: str) -> dict[str, set[int]]:
+    """For each base timestamp, which ``_N`` indices are already taken in the destination.
+
+    Counter allocation in ``plan_destination_filename`` is GLOBAL across every
+    extension at a given base — so a destination holding ``_1.jpg`` blocks any
+    fresh ``_1.mp4`` from being allocated under the same timestamp. This index
+    is the cheap way to enforce that invariant without scanning the whole
+    existing_destination_index on every allocation.
+    """
+    used: dict[str, set[int]] = {}
+    if not os.path.isdir(destination_folder):
+        return used
+    for entry in os.scandir(destination_folder):
+        if not entry.is_file():
+            continue
+        match = CANONICAL_FILENAME_RE.match(entry.name)
+        if not match:
+            continue
+        # CANONICAL_FILENAME_RE in this module doesn't expose the idx as a named
+        # group, so re-extract it from the original filename. The pattern
+        # guarantees ``<base>_<digits><ext>``.
+        idx_text = entry.name[len(match.group("base")) + 1 : -len(match.group("ext"))]
+        try:
+            idx = int(idx_text)
+        except ValueError:
+            continue
+        used.setdefault(match.group("base"), set()).add(idx)
+    return used
 
 
 def plan_destination_filename(
@@ -98,24 +133,48 @@ def plan_destination_filename(
     planned_names: set,
     existing_destination_index: dict[tuple[str, str], list[tuple[str, int]]],
     planned_hashes_by_base: dict[tuple[str, str], dict[str, str]],
+    used_indices_by_base: dict[str, set[int]] | None = None,
 ) -> tuple[str | None, str]:
     """Choose a destination filename for source_path, or return None if it's already there.
 
     Returns (filename, status). status is one of:
-      - "allocated"                — fresh slot; filename is '<base>_<N><ext>' and the
-                                     caller should perform the copy.
+      - "allocated"                — fresh slot; filename is '<base>_<N>.<canonical-ext>'
+                                     and the caller should perform the copy.
       - "skipped_existing:<name>"  — destination already contains a file with the same
                                      base timestamp and identical content.
       - "skipped_planned:<name>"   — another source file in THIS run with the same base
                                      timestamp had identical content and is already planned.
 
+    Two normalization rules applied here so the destination tree is canonical from
+    day one:
+      - Extensions are canonicalized via ``photo_lib.extensions.canonical_extension``:
+        ``.jpeg`` -> ``.jpg``, uppercase -> lowercase. So an incoming ``IMG.jpeg``
+        lands as ``<base>_<N>.jpg``.
+      - The ``_N`` counter is GLOBAL across all extensions at the same base
+        timestamp. A destination holding ``_1.jpg`` blocks any fresh ``_1.mp4``
+        — the .mp4 lands at ``_2.mp4`` instead. Pre-fix, the counter was keyed
+        per-extension, so ``_1.jpg`` + ``_1.mp4`` could both exist at the same
+        timestamp, which was confusing and forced an after-the-fact
+        ``normalize_canonical_names`` sweep.
+
     Skip detection is content-based: same base timestamp + same byte size, then SHA-256
     hash comparison. This makes re-running the ingest idempotent — previously the script
     only checked filenames, so a re-run silently allocated _3, _4, … alongside the original
     _1, _2.
+
+    ``used_indices_by_base`` is the cheap structure that backs the global counter;
+    when omitted (e.g. in direct-unit-test calls), it's lazily reconstructed from
+    ``existing_destination_index`` and ``planned_names``.
     """
-    key = (base_name, extension.lower())
+    canonical_ext = canonical_extension(extension)  # e.g. "jpg"
+    canonical_ext_dotted = f".{canonical_ext}"
+    key = (base_name, canonical_ext)
     source_hash: str | None = None
+
+    if used_indices_by_base is None:
+        used_indices_by_base = _used_indices_from_state(
+            existing_destination_index, planned_names
+        )
 
     planned_for_key = planned_hashes_by_base.get(key)
     if planned_for_key:
@@ -145,15 +204,48 @@ def plan_destination_filename(
     if source_hash is None:
         source_hash = hash_file(source_path)
 
+    # Find the smallest _N not yet taken at this base across all extensions.
+    used_at_base = used_indices_by_base.setdefault(base_name, set())
     counter = 1
-    while True:
-        candidate_name = f"{base_name}_{counter}{extension}"
-        if not os.path.exists(os.path.join(output_folder, candidate_name)) and candidate_name not in planned_names:
-            planned_names.add(candidate_name)
-            planned_hashes_by_base.setdefault(key, {})[source_hash] = candidate_name
-            existing_destination_index.setdefault(key, []).append((candidate_name, source_size))
-            return candidate_name, "allocated"
+    while counter in used_at_base:
         counter += 1
+    candidate_name = f"{base_name}_{counter}{canonical_ext_dotted}"
+    used_at_base.add(counter)
+    planned_names.add(candidate_name)
+    planned_hashes_by_base.setdefault(key, {})[source_hash] = candidate_name
+    existing_destination_index.setdefault(key, []).append((candidate_name, source_size))
+    return candidate_name, "allocated"
+
+
+def _used_indices_from_state(
+    existing_destination_index: dict[tuple[str, str], list[tuple[str, int]]],
+    planned_names: set,
+) -> dict[str, set[int]]:
+    """Reconstruct ``used_indices_by_base`` from the existing-dest index + planned names.
+
+    Used only when ``plan_destination_filename`` is called without an explicit
+    ``used_indices_by_base`` (direct unit-test calls). Full-pipeline callers
+    pass the shared dict so we don't pay this scan per allocation.
+    """
+    used: dict[str, set[int]] = {}
+    for (base, _canonical_ext), entries in existing_destination_index.items():
+        for filename, _size in entries:
+            match = CANONICAL_FILENAME_RE.match(filename)
+            if match:
+                idx_text = filename[len(match.group("base")) + 1 : -len(match.group("ext"))]
+                try:
+                    used.setdefault(base, set()).add(int(idx_text))
+                except ValueError:
+                    continue
+    for planned_name in planned_names:
+        match = CANONICAL_FILENAME_RE.match(planned_name)
+        if match:
+            idx_text = planned_name[len(match.group("base")) + 1 : -len(match.group("ext"))]
+            try:
+                used.setdefault(match.group("base"), set()).add(int(idx_text))
+            except ValueError:
+                continue
+    return used
 
 
 def infer_media_filename_from_json(json_filename: str) -> str | None:
@@ -263,6 +355,7 @@ def _plan_copies_for_source(source_folder: str, destination_folder: str, dry_run
     planned_destination_names = shared["planned_destination_names"]
     existing_destination_index = shared["existing_destination_index"]
     planned_hashes_by_base = shared["planned_hashes_by_base"]
+    used_indices_by_base = shared["used_indices_by_base"]
 
     shared["total_metadata_processed"] += len(metadata_json_filenames)
 
@@ -299,6 +392,7 @@ def _plan_copies_for_source(source_folder: str, destination_folder: str, dry_run
                     planned_destination_names,
                     existing_destination_index,
                     planned_hashes_by_base,
+                    used_indices_by_base,
                 )
 
                 if unique_new_filename is None:
@@ -415,6 +509,7 @@ def process_and_copy_media_files(source_folders, destination_folder: str, dry_ru
         "copy_ops": [],
         "planned_destination_names": set(),
         "existing_destination_index": build_destination_index(destination_folder),
+        "used_indices_by_base": build_used_indices_by_base(destination_folder),
         "planned_hashes_by_base": {},
         "skipped_duplicate_count": 0,
         "live_photo_matched": 0,

@@ -34,6 +34,7 @@ import os
 
 from photo_lib.duplicate_cache import FingerprintCache, default_cache_path
 from photo_lib.duplicate_finder import (
+    DEFAULT_PHASH_HAMMING_THRESHOLD,
     FileFingerprint,
     apply_simple_rename_plan,
     fingerprint_file,
@@ -82,7 +83,7 @@ def scan(root: str, cache_path: str | None = None) -> int:
     return hashed_count
 
 
-def _load_groups(root: str, cache_path: str | None):
+def _load_groups(root: str, cache_path: str | None, phash_threshold: int):
     cache_path = cache_path or default_cache_path(root)
     if not os.path.exists(cache_path):
         raise SystemExit(
@@ -93,20 +94,25 @@ def _load_groups(root: str, cache_path: str | None):
     # Drop entries whose underlying file no longer exists (mark/finalize may
     # have moved files; the cache is keyed by path).
     fingerprints = [fp for fp in fingerprints if os.path.exists(fp.path)]
-    return fingerprints, group_duplicates(fingerprints)
+    return fingerprints, group_duplicates(
+        fingerprints, phash_hamming_threshold=phash_threshold,
+    )
 
 
-def report(root: str, output_path: str, cache_path: str | None = None) -> int:
-    _fingerprints, groups = _load_groups(root, cache_path)
+def report(root: str, output_path: str, cache_path: str | None = None,
+           phash_threshold: int = DEFAULT_PHASH_HAMMING_THRESHOLD) -> int:
+    _fingerprints, groups = _load_groups(root, cache_path, phash_threshold)
     html_text = render_html_report(groups, root)
     with open(output_path, "w", encoding="utf-8") as fh:
         fh.write(html_text)
-    logger.info("Wrote %d-group report to %s", len(groups), output_path)
+    logger.info("Wrote %d-group report to %s (phash_threshold=%d)",
+                len(groups), output_path, phash_threshold)
     return len(groups)
 
 
-def mark(root: str, dry_run: bool, cache_path: str | None = None) -> int:
-    _fingerprints, groups = _load_groups(root, cache_path)
+def mark(root: str, dry_run: bool, cache_path: str | None = None,
+         phash_threshold: int = DEFAULT_PHASH_HAMMING_THRESHOLD) -> int:
+    _fingerprints, groups = _load_groups(root, cache_path, phash_threshold)
     plan = plan_mark(groups)
     prefix = "[DRY-RUN] " if dry_run else ""
     logger.info("%s%d files would be renamed across %d groups",
@@ -159,9 +165,9 @@ def main(args: argparse.Namespace) -> None:
         scan(target_directory, args.cache)
     elif args.command == "report":
         output_path = args.output or os.path.join(target_directory, "duplicate_report.html")
-        report(target_directory, output_path, args.cache)
+        report(target_directory, output_path, args.cache, args.phash_threshold)
     elif args.command == "mark":
-        mark(target_directory, args.dry_run, args.cache)
+        mark(target_directory, args.dry_run, args.cache, args.phash_threshold)
     elif args.command == "finalize":
         finalize(target_directory, args.dry_run, args.cache)
     else:
@@ -188,6 +194,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dry-run", action="store_true",
         help="(mark, finalize) Show the planned renames without touching disk.",
+    )
+    parser.add_argument(
+        "--phash-threshold", type=int, default=DEFAULT_PHASH_HAMMING_THRESHOLD,
+        help=f"(report, mark) Hamming distance for fuzzy pHash matching in "
+             f"tier 3 (images) and tier 2 (videos). 0 = exact match only; "
+             f"default {DEFAULT_PHASH_HAMMING_THRESHOLD} catches takeout "
+             f"re-encoding; higher catches more visually-similar shots at the "
+             f"cost of false-positive groups.",
     )
 
     cli_arguments = parser.parse_args()

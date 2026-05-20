@@ -278,6 +278,148 @@ class TestPlanFinalize(unittest.TestCase):
         self.assertEqual(plan, [])
 
 
+class TestHammingDistance(unittest.TestCase):
+    def test_identical_hashes_distance_zero(self):
+        self.assertEqual(
+            duplicate_finder.hamming_distance_hex("abcd1234", "abcd1234"), 0,
+        )
+
+    def test_single_bit_flip(self):
+        # 0x00 vs 0x01 differ in 1 bit
+        self.assertEqual(
+            duplicate_finder.hamming_distance_hex("00", "01"), 1,
+        )
+
+    def test_all_bits_different(self):
+        # 0xff vs 0x00 = 8 bits
+        self.assertEqual(
+            duplicate_finder.hamming_distance_hex("ff", "00"), 8,
+        )
+
+
+class TestLowEntropyPhash(unittest.TestCase):
+    def test_all_zeros_is_low_entropy(self):
+        self.assertTrue(duplicate_finder.is_low_entropy_phash("0000000000000000"))
+
+    def test_all_ones_is_low_entropy(self):
+        self.assertTrue(duplicate_finder.is_low_entropy_phash("ffffffffffffffff"))
+
+    def test_balanced_phash_is_not_low_entropy(self):
+        # 32 set bits out of 64 — perfectly balanced
+        self.assertFalse(duplicate_finder.is_low_entropy_phash("00000000ffffffff"))
+
+    def test_just_above_threshold_is_not_low_entropy(self):
+        # 8 set bits — at the lower bound, should NOT be flagged
+        self.assertFalse(duplicate_finder.is_low_entropy_phash("00000000000000ff"))
+
+    def test_just_below_threshold_is_low_entropy(self):
+        # 7 set bits — below the lower bound
+        self.assertTrue(duplicate_finder.is_low_entropy_phash("000000000000007f"))
+
+
+class TestFuzzyPhashGrouping(unittest.TestCase):
+    """Threshold > 0 enables Hamming-distance pHash matching for tier 3."""
+
+    def _fp(self, path: str, phash_hex: str) -> duplicate_finder.FileFingerprint:
+        return duplicate_finder.FileFingerprint(
+            path=path, size=1000, mtime=0.0, media_kind="image",
+            file_sha256=f"file_{path}", pixel_sha256=f"pix_{path}",
+            phash_hex=phash_hex, frame_phashes_hex=None,
+            width=100, height=100,
+        )
+
+    def test_threshold_zero_requires_exact_match(self):
+        # 4 bits apart (4 vs b in the last hex = 0100 vs 1011) — must NOT group at threshold 0.
+        groups = duplicate_finder.group_duplicates(
+            [
+                self._fp("/lib/a.jpg", "abcd1234abcd1234"),
+                self._fp("/lib/b.jpg", "abcd1234abcd123b"),
+            ],
+            phash_hamming_threshold=0,
+        )
+        self.assertEqual(groups, [])
+
+    def test_threshold_above_distance_groups(self):
+        # 4 bits apart, threshold 5 — must group.
+        groups = duplicate_finder.group_duplicates(
+            [
+                self._fp("/lib/a.jpg", "abcd1234abcd1234"),
+                self._fp("/lib/b.jpg", "abcd1234abcd123b"),
+            ],
+            phash_hamming_threshold=5,
+        )
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].tier, 3)
+        self.assertEqual(len(groups[0].fingerprints), 2)
+
+    def test_threshold_below_distance_no_group(self):
+        # 8 bits apart (34 vs cb = 00110100 vs 11001011), threshold 3 — no group.
+        groups = duplicate_finder.group_duplicates(
+            [
+                self._fp("/lib/a.jpg", "abcd1234abcd1234"),
+                self._fp("/lib/b.jpg", "abcd1234abcd12cb"),
+            ],
+            phash_hamming_threshold=3,
+        )
+        self.assertEqual(groups, [])
+
+    def test_low_entropy_phashes_excluded_from_fuzzy_match(self):
+        # Two all-zero pHashes would trivially match at any threshold, but the
+        # low-entropy filter should drop them so they don't form a fake group.
+        groups = duplicate_finder.group_duplicates(
+            [
+                self._fp("/lib/black1.jpg", "0000000000000000"),
+                self._fp("/lib/black2.jpg", "0000000000000000"),
+            ],
+            phash_hamming_threshold=8,
+        )
+        # Exact-equality tier 3 catches this pair regardless of low-entropy
+        # filter (exact match is unambiguous), so we expect 1 group of 2.
+        # The low-entropy filter only kicks in for FUZZY (distance > 0).
+        self.assertEqual(len(groups), 1)
+
+    def test_low_entropy_phashes_excluded_when_distance_is_nonzero(self):
+        # Two low-entropy pHashes 2 bits apart at threshold 8 — must NOT group.
+        groups = duplicate_finder.group_duplicates(
+            [
+                self._fp("/lib/black1.jpg", "0000000000000000"),
+                self._fp("/lib/black2.jpg", "0000000000000003"),  # 2 bits different
+            ],
+            phash_hamming_threshold=8,
+        )
+        self.assertEqual(groups, [])
+
+    def test_transitive_clustering_via_union_find(self):
+        # A vs B distance 4, B vs C distance 4. Threshold 5 unions all three
+        # even though A vs C may be larger.
+        groups = duplicate_finder.group_duplicates(
+            [
+                self._fp("/lib/a.jpg", "abcd1234abcd1234"),
+                self._fp("/lib/b.jpg", "abcd1234abcd123b"),  # 4 from a
+                self._fp("/lib/c.jpg", "abcd1234abcd12c4"),  # 4 from a (last 8 bits 34 -> c4)
+            ],
+            phash_hamming_threshold=5,
+        )
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0].fingerprints), 3)
+
+    def test_exact_match_claims_files_before_fuzzy_pass(self):
+        # A and B share an exact pHash; C is fuzzy-distance 4 away.
+        # Exact-match pass groups A+B first; fuzzy pass only looks at
+        # unclaimed remainders, so C ends up alone.
+        groups = duplicate_finder.group_duplicates(
+            [
+                self._fp("/lib/a.jpg", "abcd1234abcd1234"),
+                self._fp("/lib/b.jpg", "abcd1234abcd1234"),
+                self._fp("/lib/c.jpg", "abcd1234abcd123b"),
+            ],
+            phash_hamming_threshold=5,
+        )
+        self.assertEqual(len(groups), 1)
+        paths = {fp.path for fp in groups[0].fingerprints}
+        self.assertEqual(paths, {"/lib/a.jpg", "/lib/b.jpg"})
+
+
 class TestVideoFingerprint(unittest.TestCase):
     """Video support: file-bytes hash always populated; frame-pHash tuple
     populated when ffmpeg can decode and pHash sample frames."""

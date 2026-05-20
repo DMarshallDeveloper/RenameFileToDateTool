@@ -61,6 +61,21 @@ MARKED_FILENAME_RE = re.compile(
 
 VIDEO_FRAME_COUNT = 5  # frames sampled per video for pHash comparison
 
+# Default Hamming-distance threshold for fuzzy pHash matching in tier 3.
+# 0  = exact match only (strict). Misses takeout-re-encoded copies whose pHash
+#      shifts by a few bits.
+# 8  = covers same-image-re-saved-at-same-quality (~4 bits) and same-image-
+#      re-saved-at-lower-quality (~10-12 bits) with a small safety margin.
+# 16 = aggressive; starts catching visually-similar-but-different shots.
+# A pHash is 64 bits so any threshold > ~30 collapses everything.
+DEFAULT_PHASH_HAMMING_THRESHOLD = 8
+
+# A pHash with very few set bits (or very few cleared bits) is "low entropy"
+# and meaningless for fuzzy matching — e.g., a solid-color thumbnail hashes to
+# all-zeros and would falsely cluster with every other solid-color thumbnail.
+# Require at least this many bits in each direction to participate in tier 3.
+_MIN_PHASH_BITS_EACH_WAY = 8
+
 
 @dataclass(frozen=True)
 class FileFingerprint:
@@ -251,17 +266,73 @@ def fingerprint_file(path: str) -> FileFingerprint | None:
     return None
 
 
-def group_duplicates(fingerprints: Iterable[FileFingerprint]) -> list[DuplicateGroup]:
+def hamming_distance_hex(hex_a: str, hex_b: str) -> int:
+    """Hamming distance between two equal-length hex pHash strings (bit-wise)."""
+    return (int(hex_a, 16) ^ int(hex_b, 16)).bit_count()
+
+
+def is_low_entropy_phash(phash_hex: str) -> bool:
+    """True iff the pHash has too few set/cleared bits to be useful for fuzzy
+    matching — protects against solid-color thumbnails forming a giant fake
+    cluster at any non-zero threshold."""
+    bits_set = int(phash_hex, 16).bit_count()
+    return bits_set < _MIN_PHASH_BITS_EACH_WAY or bits_set > 64 - _MIN_PHASH_BITS_EACH_WAY
+
+
+def _union_find_cluster(items: list, edge_predicate) -> list[list]:
+    """Group ``items`` into clusters where ``edge_predicate(a, b)`` holds.
+
+    Quadratic in len(items); fine for libraries up to ~50k since each pair-test
+    is just XOR + bit_count. Returns only clusters of size ≥ 2.
+    """
+    n = len(items)
+    parent = list(range(n))
+
+    def find(node: int) -> int:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]  # path-halving
+            node = parent[node]
+        return node
+
+    def union(a: int, b: int) -> None:
+        root_a, root_b = find(a), find(b)
+        if root_a != root_b:
+            parent[root_a] = root_b
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if edge_predicate(items[i], items[j]):
+                union(i, j)
+
+    clusters: dict[int, list] = defaultdict(list)
+    for i in range(n):
+        clusters[find(i)].append(items[i])
+    return [members for members in clusters.values() if len(members) >= 2]
+
+
+def group_duplicates(
+    fingerprints: Iterable[FileFingerprint],
+    phash_hamming_threshold: int = 0,
+) -> list[DuplicateGroup]:
     """Cluster fingerprints into duplicate groups using tiers 1-3.
 
     A file is placed into the FIRST tier it joins a multi-member group in: a
     pair of byte-identical files goes into tier 1 only, not tier 1 *and* tier 2.
     This avoids reporting the same pair under multiple tiers.
+
+    ``phash_hamming_threshold`` controls tier 3 (image pHash) and the
+    video-frame tier 2 fuzzy match:
+      - 0 = exact equality only; fastest, strictest. Same as the original
+        behavior.
+      - > 0 = a pair counts as a match if Hamming distance ≤ threshold.
+        Catches takeout re-encoding (pHashes typically differ by 4-12 bits).
+        Solid-color / low-entropy pHashes are excluded from fuzzy matching to
+        prevent giant false clusters.
     """
     by_file_sha: dict[str, list[FileFingerprint]] = defaultdict(list)
     by_pixel_sha: dict[str, list[FileFingerprint]] = defaultdict(list)
-    by_phash: dict[str, list[FileFingerprint]] = defaultdict(list)
-    by_frame_phashes: dict[tuple[str, ...], list[FileFingerprint]] = defaultdict(list)
+    by_phash_exact: dict[str, list[FileFingerprint]] = defaultdict(list)
+    by_frame_phashes_exact: dict[tuple[str, ...], list[FileFingerprint]] = defaultdict(list)
 
     materialized = list(fingerprints)
     for fingerprint in materialized:
@@ -269,9 +340,9 @@ def group_duplicates(fingerprints: Iterable[FileFingerprint]) -> list[DuplicateG
         if fingerprint.pixel_sha256 is not None:
             by_pixel_sha[fingerprint.pixel_sha256].append(fingerprint)
         if fingerprint.phash_hex is not None:
-            by_phash[fingerprint.phash_hex].append(fingerprint)
+            by_phash_exact[fingerprint.phash_hex].append(fingerprint)
         if fingerprint.frame_phashes_hex is not None:
-            by_frame_phashes[fingerprint.frame_phashes_hex].append(fingerprint)
+            by_frame_phashes_exact[fingerprint.frame_phashes_hex].append(fingerprint)
 
     used_paths: set[str] = set()
     groups: list[DuplicateGroup] = []
@@ -293,11 +364,50 @@ def group_duplicates(fingerprints: Iterable[FileFingerprint]) -> list[DuplicateG
     # them with the same confidence badge.
     for members in by_pixel_sha.values():
         _emit(2, members)
-    for members in by_frame_phashes.values():
+    for members in by_frame_phashes_exact.values():
         _emit(2, members)
-    # Tier 3: same image-pHash (covers re-encoded / resized images).
-    for members in by_phash.values():
+
+    # Tier 3 (images): pHash match. Exact-equality buckets first (cheap);
+    # fuzzy union-find cluster only for fingerprints not already claimed.
+    for members in by_phash_exact.values():
         _emit(3, members)
+
+    if phash_hamming_threshold > 0:
+        # Fuzzy tier 3 (images): cluster the remaining pHash-bearing fingerprints
+        # by Hamming distance, excluding low-entropy hashes (solid colors).
+        image_remainders = [
+            fp for fp in materialized
+            if fp.phash_hex is not None
+            and fp.path not in used_paths
+            and not is_low_entropy_phash(fp.phash_hex)
+        ]
+        if image_remainders:
+            for cluster in _union_find_cluster(
+                image_remainders,
+                lambda a, b: hamming_distance_hex(a.phash_hex, b.phash_hex)
+                              <= phash_hamming_threshold,
+            ):
+                _emit(3, cluster)
+
+        # Fuzzy tier 2 (videos): two videos match iff EVERY corresponding
+        # frame is within threshold. Stricter than image tier 3 because the
+        # signal is per-frame; one stray frame mismatch likely means different
+        # clips.
+        video_remainders = [
+            fp for fp in materialized
+            if fp.frame_phashes_hex is not None
+            and fp.path not in used_paths
+        ]
+        if video_remainders:
+            def _videos_fuzzy_match(a: FileFingerprint, b: FileFingerprint) -> bool:
+                if len(a.frame_phashes_hex) != len(b.frame_phashes_hex):
+                    return False
+                return all(
+                    hamming_distance_hex(frame_a, frame_b) <= phash_hamming_threshold
+                    for frame_a, frame_b in zip(a.frame_phashes_hex, b.frame_phashes_hex)
+                )
+            for cluster in _union_find_cluster(video_remainders, _videos_fuzzy_match):
+                _emit(2, cluster)
 
     return groups
 

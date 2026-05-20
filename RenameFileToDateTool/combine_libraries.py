@@ -34,43 +34,6 @@ from photo_lib.logging_setup import configure_logging
 logger = logging.getLogger("photo_lib")
 
 
-def _next_free_canonical_name(dest_folder: str, base: str, ext: str, starting_idx: int) -> str:
-    """Find the smallest ``_N`` >= starting_idx such that ``<base>_<N>.<ext>`` is free."""
-    n = starting_idx
-    while True:
-        candidate = f"{base}_{n}.{ext}"
-        if not os.path.exists(os.path.join(dest_folder, candidate)):
-            return candidate
-        n += 1
-
-
-def _resolve_dest_name(source_name: str, dest_folder: str) -> str:
-    """Return the basename the source file should take inside ``dest_folder``.
-
-    If ``source_name`` doesn't already exist there, use it unchanged. Otherwise
-    bump its ``_N`` (for canonical names) or append a ``_dup<N>`` suffix
-    (non-canonical fallback) until a free slot is found.
-    """
-    if not os.path.exists(os.path.join(dest_folder, source_name)):
-        return source_name
-
-    match = CANONICAL_FILENAME_PARTS_RE.match(source_name)
-    if match is not None:
-        base = match.group("base")
-        ext = match.group("ext")
-        starting_idx = int(match.group("idx")) + 1
-        return _next_free_canonical_name(dest_folder, base, ext, starting_idx)
-
-    # Non-canonical fallback: ``original_dup1.ext``, ``original_dup2.ext``, ...
-    stem, ext = os.path.splitext(source_name)
-    counter = 1
-    while True:
-        candidate = f"{stem}_dup{counter}{ext}"
-        if not os.path.exists(os.path.join(dest_folder, candidate)):
-            return candidate
-        counter += 1
-
-
 def plan_combine(sources: list[str], dest: str) -> list[tuple[str, str]]:
     """Return ``[(src_path, dest_path), ...]`` for the combine. Order matters:
     a source that comes later loses ties (its ``_N`` gets bumped)."""

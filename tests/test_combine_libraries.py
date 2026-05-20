@@ -105,5 +105,149 @@ class TestCombine(unittest.TestCase):
         )
 
 
+class TestContentPreservation(unittest.TestCase):
+    """The data-safety invariant: whatever's at the destination matches the
+    bytes of whatever source was assigned that slot. No silent overwrites, no
+    cross-wired contents."""
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix='test_combine_content_')
+        self.source_a = os.path.join(self.workdir, 'A')
+        self.source_b = os.path.join(self.workdir, 'B')
+        self.dest = os.path.join(self.workdir, 'dest')
+        self.addCleanup(lambda: shutil.rmtree(self.workdir, ignore_errors=True))
+
+    def _read(self, *parts: str) -> bytes:
+        with open(os.path.join(self.dest, *parts), "rb") as fh:
+            return fh.read()
+
+    def test_first_source_wins_original_slot(self):
+        """When A and B both have ``_1.jpg``, A keeps ``_1.jpg`` with A's bytes
+        and B's bytes land at ``_2.jpg``. No cross-contamination."""
+        _touch(os.path.join(self.source_a, '2014'), '2014-01-01 13.00.00_1.jpg', b"FROM_A")
+        _touch(os.path.join(self.source_b, '2014'), '2014-01-01 13.00.00_1.jpg', b"FROM_B")
+        combine_libraries.combine([self.source_a, self.source_b], self.dest)
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_1.jpg'), b"FROM_A")
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_2.jpg'), b"FROM_B")
+
+    def test_three_sources_each_bytes_preserved(self):
+        """Three-source combine — all three byte-distinct copies make it
+        through with the right content at the right slot."""
+        _touch(os.path.join(self.source_a, '2014'), '2014-01-01 13.00.00_1.jpg', b"AA")
+        _touch(os.path.join(self.source_b, '2014'), '2014-01-01 13.00.00_1.jpg', b"BB")
+        source_c = os.path.join(self.workdir, 'C')
+        _touch(os.path.join(source_c, '2014'), '2014-01-01 13.00.00_1.jpg', b"CC")
+        combine_libraries.combine(
+            [self.source_a, self.source_b, source_c], self.dest,
+        )
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_1.jpg'), b"AA")
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_2.jpg'), b"BB")
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_3.jpg'), b"CC")
+
+    def test_cascading_collisions_preserve_content(self):
+        """A has _1..3, B has _1..3 — B's files cascade onto _4..6 with their
+        original bytes intact."""
+        for index in (1, 2, 3):
+            _touch(os.path.join(self.source_a, '2014'),
+                   f'2014-01-01 13.00.00_{index}.jpg', f"A{index}".encode())
+            _touch(os.path.join(self.source_b, '2014'),
+                   f'2014-01-01 13.00.00_{index}.jpg', f"B{index}".encode())
+        combine_libraries.combine([self.source_a, self.source_b], self.dest)
+        # A keeps _1..3, B lands at _4..6 (preserving its original ordering).
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_1.jpg'), b"A1")
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_2.jpg'), b"A2")
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_3.jpg'), b"A3")
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_4.jpg'), b"B1")
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_5.jpg'), b"B2")
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_6.jpg'), b"B3")
+
+    def test_preexisting_dest_content_respected(self):
+        """If the dest already contains _1, the source's _1 lands at _2."""
+        _touch(os.path.join(self.dest, '2014'),
+               '2014-01-01 13.00.00_1.jpg', b"ALREADY_HERE")
+        _touch(os.path.join(self.source_a, '2014'),
+               '2014-01-01 13.00.00_1.jpg', b"FROM_A")
+        combine_libraries.combine([self.source_a], self.dest)
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_1.jpg'),
+                         b"ALREADY_HERE")
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_2.jpg'),
+                         b"FROM_A")
+
+    def test_cross_extension_no_collision(self):
+        """Same timestamp, different extension — both keep their _1 slot."""
+        _touch(os.path.join(self.source_a, '2014'),
+               '2014-01-01 13.00.00_1.jpg', b"IMG_BYTES")
+        _touch(os.path.join(self.source_a, '2014'),
+               '2014-01-01 13.00.00_1.mp4', b"VID_BYTES")
+        combine_libraries.combine([self.source_a], self.dest)
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_1.jpg'), b"IMG_BYTES")
+        self.assertEqual(self._read('2014', '2014-01-01 13.00.00_1.mp4'), b"VID_BYTES")
+
+
+class TestMtimePreservation(unittest.TestCase):
+    """shutil.copy2 must preserve mtime — the dedup cache uses (path, size,
+    mtime) as its invalidation key, so a combine that bumped every file's
+    mtime to 'now' would defeat caching."""
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix='test_combine_mtime_')
+        self.addCleanup(lambda: shutil.rmtree(self.workdir, ignore_errors=True))
+
+    def test_mtime_preserved_on_copy(self):
+        source = os.path.join(self.workdir, 'A')
+        dest = os.path.join(self.workdir, 'dest')
+        src_path = _touch(os.path.join(source, '2014'),
+                          '2014-01-01 13.00.00_1.jpg', b"hello")
+        # Force a known mtime so we can compare exactly.
+        original_mtime = 1_500_000_000.5
+        os.utime(src_path, (original_mtime, original_mtime))
+
+        combine_libraries.combine([source], dest)
+
+        dst_path = os.path.join(dest, '2014', '2014-01-01 13.00.00_1.jpg')
+        copied_mtime = os.path.getmtime(dst_path)
+        # Most filesystems store sub-second precision; round to 1ms for
+        # FAT/exFAT robustness.
+        self.assertAlmostEqual(copied_mtime, original_mtime, places=2)
+
+
+class TestEdgeCases(unittest.TestCase):
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix='test_combine_edge_')
+        self.source_a = os.path.join(self.workdir, 'A')
+        self.dest = os.path.join(self.workdir, 'dest')
+        self.addCleanup(lambda: shutil.rmtree(self.workdir, ignore_errors=True))
+
+    def test_empty_source_is_noop(self):
+        os.makedirs(self.source_a)  # source exists but contains no files
+        combine_libraries.combine([self.source_a], self.dest)
+        self.assertFalse(os.listdir(self.dest) if os.path.exists(self.dest) else False)
+
+    def test_files_at_source_root_land_at_dest_root(self):
+        _touch(self.source_a, '2014-01-01 13.00.00_1.jpg', b"loose")
+        combine_libraries.combine([self.source_a], self.dest)
+        self.assertEqual(
+            _names_recursive(self.dest),
+            {'2014-01-01 13.00.00_1.jpg'},
+        )
+
+    def test_mixed_canonical_and_non_canonical_in_same_folder(self):
+        _touch(os.path.join(self.source_a, '2014'), '2014-01-01 13.00.00_1.jpg', b"canonical_a")
+        _touch(os.path.join(self.source_a, '2014'), 'IMG_0001.jpg', b"non_canonical_a")
+        source_b = os.path.join(self.workdir, 'B')
+        _touch(os.path.join(source_b, '2014'), '2014-01-01 13.00.00_1.jpg', b"canonical_b")
+        _touch(os.path.join(source_b, '2014'), 'IMG_0001.jpg', b"non_canonical_b")
+        combine_libraries.combine([self.source_a, source_b], self.dest)
+        self.assertEqual(
+            _names_recursive(self.dest),
+            {
+                os.path.join('2014', '2014-01-01 13.00.00_1.jpg'),
+                os.path.join('2014', '2014-01-01 13.00.00_2.jpg'),
+                os.path.join('2014', 'IMG_0001.jpg'),
+                os.path.join('2014', 'IMG_0001_dup1.jpg'),
+            },
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -301,6 +301,47 @@ Edge cases covered by tests:
 
 ---
 
+## 2026-05-21 — Cross-date duplicate preservation (commit `9d07344`)
+
+### 18. Both dates preserved when duplicates have different timestamps
+
+Discovered while reviewing the workflow: the pre-existing `plan_mark` collapsed a duplicate group's losers under the WINNER's `<base>_<idx>` prefix and left each file in its original folder. For a same-timestamp group that worked. For a cross-date group (winner from 2014, duplicate from 2015), the loser's filename inherited the 2014 base — losing its 2015 timestamp — but the file was still physically sitting in the `2015\` folder, mismatched with its new name. Neither "adjacent on sort" nor "both dates visible for review" was actually achieved.
+
+**Spec'd before implementing**:
+- Filename marker: `<winner_base>_<winner_idx>_<letter>__from_<loser_base>.<ext>` (double-underscore + `from_` — unambiguous to regex, no special chars).
+- Sensitivity: ANY base difference triggers cross-date treatment (same-day burst-time differences also get the marker — maximum information preservation).
+- HTML report includes a `cross-date` badge per group.
+
+**Changes**:
+- `photo_lib/duplicate_finder.py` —
+  - `MARKED_FILENAME_RE` extended with optional `__from_<origin_base>` capture group; one regex handles both forms.
+  - `plan_mark` moves EVERY loser into the winner's folder (so they sort adjacent in Explorer). Cross-date losers carry the `__from_<loser_base>` marker; same-base losers keep the existing `_a/_b/_c` form unchanged.
+  - `plan_finalize` rewritten as a two-phase walk: phase 1 collects all marked entries + per-folder canonical idx buckets across the whole tree, phase 2 does the two-pass-by-letter allocation. Surviving cross-date losers (`_b`/`_c` with the `__from_` marker) are sent back to their origin year folder and re-canonicalized to the lowest free idx in that bucket. Bundled-early years (2000-2010) route to the `2000 - 2010` folder via a new `_target_folder_for_base` helper that reuses the `BUNDLED_EARLY_*` constants from `photo_lib/config.py`.
+  - `apply_simple_rename_plan` now `os.makedirs(..., exist_ok=True)` on the target dir before the final rename, so a cross-folder destination that doesn't exist yet is created on demand.
+- `photo_lib/duplicate_report.py` — new `_is_cross_date_group` helper (checks if canonical members have ≥2 distinct `<base>`); `_render_group` emits `<span class="cross-date-badge">cross-date</span>` when applicable.
+
+**Behavior example**:
+```
+Before mark:
+  F:\PhotosCombined\2014\2014-06-15 10.00.00_1.jpg          (winner)
+  F:\PhotosCombined\2015\2015-08-20 14.30.00_3.jpg          (loser)
+
+After mark:
+  F:\PhotosCombined\2014\2014-06-15 10.00.00_1_a.jpg
+  F:\PhotosCombined\2014\2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg
+  (both adjacent in Explorer; both dates visible)
+
+After finalize (user kept BOTH — they weren't duplicates after all):
+  F:\PhotosCombined\2014\2014-06-15 10.00.00_1.jpg          (_a survivor)
+  F:\PhotosCombined\2015\2015-08-20 14.30.00_<free>.jpg     (_b sent home)
+```
+
+Tests: +14. 286 → 300 passing. Coverage includes: cross-date mark across two and three distinct dates, same-base regression, finalize returning loser to origin year, idx-bump-when-taken at destination, two losers sharing destination bucket, bundled-early routing, multi-survivor mixed local+remote, missing origin folder created on apply, cross-date badge present/absent on report, non-canonical paths don't trigger badge.
+
+**The earlier session-notes workflow step 6 ("Manual review: open each year folder, name-sort, delete unwanted") still works** — but the user can now compare cross-date pairs side-by-side in ONE folder rather than tabbing between year folders to figure out which date is the true one.
+
+---
+
 ## Workflow once pilot is validated
 1. **Combine all three sources**:
    ```powershell

@@ -200,21 +200,93 @@ Goal: combine master + PhotosCopy into one tree, detect duplicates with high con
 
 **Tests**: +36 (image hashing, video tier-1, cache round-trip, report HTML, scan/mark/finalize end-to-end, combine collision handling). Full suite: **239 passing** (was 203).
 
-**Workflow once user is ready**:
-1. `combine_libraries.py --source <master> --source <PhotosCopy> --dest F:\PhotosCombined`
-2. `normalize_canonical_names.py --path F:\PhotosCombined` (cleans up any collision-bumped names)
-3. `find_duplicate_photos.py scan --path F:\PhotosCombined` (one-time, ~30-60 min)
-4. `find_duplicate_photos.py report --path F:\PhotosCombined` → open `duplicate_report.html` in browser to gauge scope
-5. `find_duplicate_photos.py mark --path F:\PhotosCombined` (renames to `_a/_b/_c`)
+### 10. Audit-driven combine tests + dead code removal (commit `6145a1c`)
+
+Audit of `combine_libraries.py` revealed the existing 6 tests verified algorithmic shape (filename sets) but not the data-safety invariant. Added 9 tests:
+- Content preservation (byte-level): simple collision, three sources, cascading collisions, pre-existing dest content, cross-extension same-timestamp
+- mtime preservation (the dedup cache depends on it for size+mtime invalidation)
+- Edge cases: empty source, files at source root, mixed canonical/non-canonical in same folder
+
+Also removed two dead helpers (`_resolve_dest_name`, `_next_free_canonical_name`) — defined but never called. The active path is `_resolve_dest_name_against_set`. Tests: 239 → 248.
+
+### 11. Fuzzy pHash matching with low-entropy guard (commit `e434c0f`)
+
+User pushed back on tier-3 strictness: with manual review in the loop, false-positives are cheap (an extra glance) but false-negatives leave duplicates hidden. Pre-fix the pHash tier required Hamming distance = 0, which would miss Google-Takeout re-encoded copies (typically differ by 4-12 bits).
+
+Added `phash_hamming_threshold` parameter (default 8):
+- 0 keeps the original exact-equality fast path
+- > 0 enables fuzzy union-find pass with bit-wise Hamming distance, AFTER the exact pass has claimed its files
+- Low-entropy pHashes (solid-color thumbnails ≈ all zeros, mostly all ones) are excluded from fuzzy matching to prevent giant fake clusters
+- For videos: every frame in the 5-frame tuple must be within threshold
+
+CLI: `--phash-threshold N` on the `report` and `mark` subcommands.
+
+Tests: +15. 248 → 263 passing.
+
+### 12. Takeout-ingest bug fixed (commit `df1c50b`)
+
+Two changes in `plan_destination_filename`:
+1. **Canonicalize the extension at ingest** via `canonical_extension()`. `.jpeg` → `.jpg`, uppercase → lowercase. Destination is canonical from day one.
+2. **Global `_N` counter per base across all extensions**. Backed by a new shared `used_indices_by_base` dict, built once from the existing destination via `build_used_indices_by_base`, mutated as planning proceeds.
+
+Dedup remains extension-aware where it should be: an incoming `.jpeg` is checked against existing `.jpg` files under the canonical-extension bucket, so a re-import after canonicalization is detected as a duplicate.
+
+The orphan-Live-Photo-MP4 test was updated to reflect the new behavior: pre-fix `.heic + .mp4` both got `_1` (per-extension counter); post-fix `.heic` gets `_1` and `.mp4` gets `_2` (global counter). The user confirmed this is the desired behavior — Live Photo pairing is no longer needed.
+
+Tests: +9. 263 → 272 passing.
+
+### 13. USB photos pre-staged for combine
+
+The user's `F:\initialPhotoStates\photosFromUSB` folder contains 1703 photos in a near-canonical format but flat (no year folders) and without `_N` suffixes. Examples:
+- `2003-01-02 18.48.18.jpg` (1675 files — canonical timestamp, no `_N`)
+- `2003-01-08 18.48.18-1.jpg` (28 files — canonical timestamp, hyphen-N instead of underscore-N)
+- `482988_10151241204359080_890635342_n.jpg` (1 file — Facebook-export style, no parseable date; skipped, needs manual handling)
+
+Used a one-shot Python script (in-conversation, not committed) to copy these into `F:\PhotosUSBStaged\<year>\<base>_<N>.<ext>` form. 1702 staged; the 1 Facebook-style file ignored. Sources untouched. `F:\PhotosUSBStaged` is the canonical-form 3rd source for combine.
+
+### 14. Backup of all libraries to external drive
+
+Before running the combine, the user copied to E: (external):
+- `F:\initialPhotoStates` (zips, USB photos — the truly-original raw state)
+- `F:\Photos` (post-takeout-ingest, untouched)
+- `D:\Files\Pictures and Videos` (master library)
+
+Now safe to run the combined-library workflow.
+
+### 15. Pilot run on year 2014
+
+Started a single-year pilot (2014: 782 master + 852 PhotosCopy ≈ 1700 files) before committing to the full library run. The pilot chains:
+1. `combine_libraries` master/2014 + PhotosCopy/2014 → `F:\PhotosCombined_pilot`
+2. `normalize_canonical_names` on the pilot dest
+3. `find_duplicate_photos.py scan`
+4. `find_duplicate_photos.py report --phash-threshold 8`
+
+Initial bash-syntax invocation failed (PowerShell `$var = "..."` syntax in bash); retried via the PowerShell tool. Pilot running in the background.
+
+---
+
+## Workflow once pilot is validated
+1. **Combine all three sources**:
+   ```powershell
+   python combine_libraries.py `
+       --source "D:\Files\Pictures and Videos" `
+       --source "F:\PhotosCopy" `
+       --source "F:\PhotosUSBStaged" `
+       --dest "F:\PhotosCombined"
+   ```
+2. `normalize_canonical_names.py --path F:\PhotosCombined` (cleans up any collision-bumped names from combine + mixed-case/jpeg from master)
+3. `find_duplicate_photos.py scan --path F:\PhotosCombined` (one-time, ~1-3 hr)
+4. `find_duplicate_photos.py report --path F:\PhotosCombined --phash-threshold 8` → open `duplicate_report.html` in browser to gauge scope
+5. `find_duplicate_photos.py mark --path F:\PhotosCombined --phash-threshold 8` (renames to `_a/_b/_c`)
 6. **Manual review**: open each year folder in Explorer, name-sort, delete unwanted `_b/_c/...` files
 7. `find_duplicate_photos.py finalize --path F:\PhotosCombined` (strips `_a` suffix from lone survivors)
 
 ---
 
 ## Open follow-ups (not blockers)
-1. **Fix the takeout-ingest counter bug** — `plan_destination_filename` should allocate globally per timestamp, not per (timestamp, extension). Tests in `tests/test_takeout_matching.py` will likely need updating.
-2. **Size inversions** — `size_inversions.tsv` has 659 cases ranked by deficit. Top ~30 are the most actionable; review whether to pull originals from takeout into master.
-3. **185 isolated_missing files** — generate the explicit list, spot-check whether they're real losses or false negatives in the pairing logic.
-4. **2026 −510 gap** — most are same-date sibling drift; only 8 are truly isolated. Could investigate why timestamps differ so widely for a year still being photographed.
-5. **3 `.heic` files containing `.heif` payload** in `2026` — intentional per yesterday's convention, but document/encode this in `audit_master.py` so it stops flagging them.
-6. `scratch_size_inversions.py` — still a scratch script; could be merged into `compare_libraries.py` or promoted to a sibling tool if the size-inversion data needs to be re-generated. The dedup tool may make this less relevant once duplicates are resolved.
+1. **Size inversions** — `size_inversions.tsv` (regenerable from `scratch_size_inversions.py` if needed; not committed) has 659 cases ranked by deficit. Top ~30 are the most actionable. Will likely be resolved by the dedup workflow.
+2. **185 isolated_missing files** — generate the explicit list, spot-check whether they're real losses or false negatives in the pairing logic.
+3. **2026 −510 gap** — most are same-date sibling drift; only 8 are truly isolated. Could investigate why timestamps differ so widely for a year still being photographed.
+4. **3 `.heic` files containing `.heif` payload** in `2026` — intentional per yesterday's convention, but document/encode this in `audit_master.py` so it stops flagging them.
+5. **Manual fixes from PhotosCopy still ad-hoc** — folder rename `2000-2010` → `2000 - 2010`, extension-mismatch renames (170 files), wrong-year-folder moves (10 files), extensionless MOV → `.mov` (1 file). All would need to be redone by hand if rebuilding PhotosCopy from `F:\Photos`. Could be codified as small fixers if needed.
+6. **One Facebook-style USB file** — `482988_10151241204359080_890635342_n.jpg` skipped during USB staging; has no parseable date in the filename. Manual handling required if it should join the library.

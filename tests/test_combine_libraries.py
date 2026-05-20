@@ -184,6 +184,93 @@ class TestContentPreservation(unittest.TestCase):
         self.assertEqual(self._read('2014', '2014-01-01 13.00.00_1.mp4'), b"VID_BYTES")
 
 
+class TestCaseInsensitiveCollisions(unittest.TestCase):
+    """Regression: a naive case-sensitive plan with `_1.JPG` + `_1.jpg` would
+    plan both as separate dest paths; shutil.copy2 then silently overwrites
+    one with the other on Windows NTFS / macOS HFS+. The combine MUST detect
+    case-different-but-filesystem-equivalent names as collisions.
+
+    This bug ate 286 master files in the 2014 pilot run before being caught.
+    """
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix='test_combine_case_')
+        self.source_a = os.path.join(self.workdir, 'A')
+        self.source_b = os.path.join(self.workdir, 'B')
+        self.dest = os.path.join(self.workdir, 'dest')
+        self.addCleanup(lambda: shutil.rmtree(self.workdir, ignore_errors=True))
+
+    def test_uppercase_jpg_vs_lowercase_jpg_collide(self):
+        # Master-style (uppercase) and PhotosCopy-style (lowercase) at the
+        # same base — must be detected as a collision so the second source's
+        # file lands at _2 instead of overwriting the first.
+        _touch(os.path.join(self.source_a, '2014'),
+               '2014-01-01 13.00.00_1.JPG', b"MASTER_UPPER")
+        _touch(os.path.join(self.source_b, '2014'),
+               '2014-01-01 13.00.00_1.jpg', b"COPY_LOWER")
+        plan = combine_libraries.plan_combine(
+            [self.source_a, self.source_b], self.dest,
+        )
+        dest_basenames = [os.path.basename(dst) for _, dst in plan]
+        # The plan must allocate two distinct case-folded names. Source A
+        # keeps its uppercase _1.JPG; source B bumps to _2.jpg.
+        self.assertEqual(len(plan), 2)
+        self.assertEqual(dest_basenames[0], '2014-01-01 13.00.00_1.JPG')
+        self.assertEqual(dest_basenames[1], '2014-01-01 13.00.00_2.jpg')
+
+    def test_uppercase_jpg_vs_lowercase_jpg_files_both_preserved(self):
+        # End-to-end on a real case-insensitive filesystem: after apply,
+        # both files exist in the destination with distinct names.
+        _touch(os.path.join(self.source_a, '2014'),
+               '2014-01-01 13.00.00_1.JPG', b"MASTER_UPPER")
+        _touch(os.path.join(self.source_b, '2014'),
+               '2014-01-01 13.00.00_1.jpg', b"COPY_LOWER")
+        combine_libraries.combine([self.source_a, self.source_b], self.dest)
+        # Case-insensitively, look up both files.
+        names_lower = {n.lower() for n in os.listdir(os.path.join(self.dest, '2014'))}
+        self.assertIn('2014-01-01 13.00.00_1.jpg', names_lower)
+        self.assertIn('2014-01-01 13.00.00_2.jpg', names_lower)
+        # Read the bytes through case-insensitive lookup
+        dest_files = [
+            os.path.join(self.dest, '2014', n)
+            for n in os.listdir(os.path.join(self.dest, '2014'))
+        ]
+        contents = set()
+        for path in dest_files:
+            with open(path, 'rb') as fh:
+                contents.add(fh.read())
+        self.assertEqual(contents, {b"MASTER_UPPER", b"COPY_LOWER"})
+
+    def test_pre_existing_uppercase_in_dest_blocks_lowercase_source(self):
+        # Dest already contains an uppercase JPG; a lowercase source must
+        # detect the case-insensitive collision and bump.
+        _touch(os.path.join(self.dest, '2014'),
+               '2014-01-01 13.00.00_1.JPG', b"PRE_EXISTING")
+        _touch(os.path.join(self.source_a, '2014'),
+               '2014-01-01 13.00.00_1.jpg', b"FROM_A")
+        combine_libraries.combine([self.source_a], self.dest)
+        names_lower = {n.lower() for n in os.listdir(os.path.join(self.dest, '2014'))}
+        self.assertIn('2014-01-01 13.00.00_1.jpg', names_lower)
+        self.assertIn('2014-01-01 13.00.00_2.jpg', names_lower)
+
+    def test_uppercase_extension_variations_all_collide(self):
+        # .JPG, .Jpg, .jPg, .jpg — all the same on a case-insensitive FS.
+        _touch(os.path.join(self.source_a, '2014'),
+               '2014-01-01 13.00.00_1.JPG', b"a")
+        _touch(os.path.join(self.source_b, '2014'),
+               '2014-01-01 13.00.00_1.Jpg', b"b")
+        source_c = os.path.join(self.workdir, 'C')
+        _touch(os.path.join(source_c, '2014'),
+               '2014-01-01 13.00.00_1.jpg', b"c")
+        plan = combine_libraries.plan_combine(
+            [self.source_a, self.source_b, source_c], self.dest,
+        )
+        # All three must be distinct dest paths case-insensitively.
+        dest_names_lower = [os.path.basename(dst).lower() for _, dst in plan]
+        self.assertEqual(len(dest_names_lower), 3)
+        self.assertEqual(len(set(dest_names_lower)), 3)
+
+
 class TestMtimePreservation(unittest.TestCase):
     """shutil.copy2 must preserve mtime — the dedup cache uses (path, size,
     mtime) as its invalidation key, so a combine that bumped every file's

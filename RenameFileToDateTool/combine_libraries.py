@@ -36,17 +36,27 @@ logger = logging.getLogger("photo_lib")
 
 def plan_combine(sources: list[str], dest: str) -> list[tuple[str, str]]:
     """Return ``[(src_path, dest_path), ...]`` for the combine. Order matters:
-    a source that comes later loses ties (its ``_N`` gets bumped)."""
+    a source that comes later loses ties (its ``_N`` gets bumped).
+
+    Collision detection is CASE-INSENSITIVE — Windows NTFS, macOS HFS+, and
+    most other consumer filesystems treat ``_1.JPG`` and ``_1.jpg`` as the
+    same file. A naive case-sensitive comparison would plan both as separate
+    dest paths and then shutil.copy2 would silently overwrite one with the
+    other (losing one source's content while keeping the other source's
+    name on disk). This bug ate 286 master files in the pilot run before it
+    was caught.
+    """
     plan: list[tuple[str, str]] = []
     # Track what each destination subfolder will contain after the plan is
     # applied — both real files already there and files we've planned to add —
-    # so collision detection works even before anything is copied.
+    # so collision detection works even before anything is copied. Names are
+    # stored lower-cased so the comparison is case-insensitive.
     occupied: dict[str, set[str]] = {}
 
     def _occupied(folder: str) -> set[str]:
         if folder not in occupied:
             occupied[folder] = (
-                {entry.name for entry in os.scandir(folder)}
+                {entry.name.lower() for entry in os.scandir(folder)}
                 if os.path.isdir(folder) else set()
             )
         return occupied[folder]
@@ -59,18 +69,27 @@ def plan_combine(sources: list[str], dest: str) -> list[tuple[str, str]]:
             for name in filenames:
                 source_path = os.path.join(current_dir, name)
                 # Resolve against what the dest WILL contain after planned copies,
-                # not just what's on disk now.
-                if name not in slot_set:
+                # not just what's on disk now. Case-fold the lookup.
+                if name.lower() not in slot_set:
                     dest_name = name
                 else:
                     dest_name = _resolve_dest_name_against_set(name, slot_set)
-                slot_set.add(dest_name)
+                slot_set.add(dest_name.lower())
                 dest_path = os.path.join(dest_folder, dest_name)
                 plan.append((source_path, dest_path))
     return plan
 
 
-def _resolve_dest_name_against_set(source_name: str, occupied_names: set[str]) -> str:
+def _resolve_dest_name_against_set(source_name: str, occupied_names_lower: set[str]) -> str:
+    """Return the next free dest name (case-insensitive collision-free).
+
+    ``occupied_names_lower`` is expected to already be lower-cased by the
+    caller — every candidate the loop produces is also lower-cased for the
+    membership test, so collisions are detected regardless of source case.
+    The returned name preserves the canonical_extension case it was built
+    with (lower-case for canonical filenames; original-case stem for the
+    non-canonical fallback).
+    """
     match = CANONICAL_FILENAME_PARTS_RE.match(source_name)
     if match is not None:
         base = match.group("base")
@@ -79,14 +98,14 @@ def _resolve_dest_name_against_set(source_name: str, occupied_names: set[str]) -
         n = starting_idx
         while True:
             candidate = f"{base}_{n}.{ext}"
-            if candidate not in occupied_names:
+            if candidate.lower() not in occupied_names_lower:
                 return candidate
             n += 1
     stem, ext = os.path.splitext(source_name)
     counter = 1
     while True:
         candidate = f"{stem}_dup{counter}{ext}"
-        if candidate not in occupied_names:
+        if candidate.lower() not in occupied_names_lower:
             return candidate
         counter += 1
 

@@ -7,3 +7,7 @@ tzdata
 # imagehash: perceptual hashing for find_duplicate_photos.py. pHash/wHash etc.
 # survive re-encoding and resizing where exact pixel hashing wouldn't.
 imagehash>=4.3,<5
+# hypothesis: property-based testing for the multi-script dedup pipeline.
+# Generates randomised LibrarySpec values and asserts invariants (no data
+# loss, canonical naming, year-folder placement, idempotence).
+hypothesis>=6,<7

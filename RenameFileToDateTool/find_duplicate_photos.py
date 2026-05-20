@@ -42,7 +42,10 @@ from photo_lib.duplicate_finder import (
     plan_finalize,
     plan_mark,
 )
-from photo_lib.duplicate_report import render_html_report
+from photo_lib.duplicate_report import (
+    render_html_report,
+    render_singletons_html_report,
+)
 from photo_lib.extensions import is_media, normalize_extension
 from photo_lib.logging_setup import configure_logging
 from photo_lib.tk_picker import resolve_directory
@@ -101,12 +104,25 @@ def _load_groups(root: str, cache_path: str | None, phash_threshold: int):
 
 def report(root: str, output_path: str, cache_path: str | None = None,
            phash_threshold: int = DEFAULT_PHASH_HAMMING_THRESHOLD) -> int:
-    _fingerprints, groups = _load_groups(root, cache_path, phash_threshold)
+    fingerprints, groups = _load_groups(root, cache_path, phash_threshold)
     html_text = render_html_report(groups, root)
     with open(output_path, "w", encoding="utf-8") as fh:
         fh.write(html_text)
-    logger.info("Wrote %d-group report to %s (phash_threshold=%d)",
+    logger.info("Wrote %d-group duplicate report to %s (phash_threshold=%d)",
                 len(groups), output_path, phash_threshold)
+
+    grouped_paths = {fp.path for group in groups for fp in group.fingerprints}
+    singletons = [fp for fp in fingerprints if fp.path not in grouped_paths]
+    singletons_path = os.path.join(
+        os.path.dirname(output_path) or ".",
+        "singletons_report.html",
+    )
+    singletons_html = render_singletons_html_report(singletons, root)
+    with open(singletons_path, "w", encoding="utf-8") as fh:
+        fh.write(singletons_html)
+    logger.info("Wrote %d-singleton report to %s",
+                len(singletons), singletons_path)
+
     return len(groups)
 
 
@@ -126,11 +142,12 @@ def mark(root: str, dry_run: bool, cache_path: str | None = None,
     if not dry_run:
         applied = apply_simple_rename_plan([(o, n) for o, n, _ in plan])
         logger.info("Applied %d renames", applied)
-        # Invalidate cache rows whose paths just moved.
+        # Update cache: rename the path key so a subsequent ``report`` can
+        # read the same hash data under the new filename without a re-scan.
         cache_path = cache_path or default_cache_path(root)
         with FingerprintCache(cache_path) as cache:
-            for old_path, _new_path, _ in plan:
-                cache.forget(old_path)
+            for old_path, new_path, _ in plan:
+                cache.rename(old_path, new_path)
     return len(plan)
 
 
@@ -151,8 +168,8 @@ def finalize(root: str, dry_run: bool, cache_path: str | None = None) -> int:
         cache_path = cache_path or default_cache_path(root)
         if os.path.exists(cache_path):
             with FingerprintCache(cache_path) as cache:
-                for old_path, _new_path in plan:
-                    cache.forget(old_path)
+                for old_path, new_path in plan:
+                    cache.rename(old_path, new_path)
     return len(plan)
 
 

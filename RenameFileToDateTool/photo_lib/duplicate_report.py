@@ -137,6 +137,68 @@ h1 { font-size: 1.3rem; }
 """
 
 
+def _year_from_relpath(relpath: str) -> str:
+    """Extract a year folder from a relative path, falling back to '(no year)'."""
+    parts = relpath.replace("\\", "/").split("/")
+    if len(parts) >= 2:
+        first = parts[0]
+        # Accept "2026", "2000 - 2010", etc — anything that starts with 4 digits.
+        if first[:4].isdigit():
+            return first
+    return "(no year)"
+
+
+def render_singletons_html_report(
+    singletons: Iterable[FileFingerprint],
+    library_root: str,
+) -> str:
+    """Render an HTML report of files that weren't grouped as duplicates.
+
+    Useful for spotting files that exist in only one source — after a combine
+    of master + takeout, a singleton is either a genuine one-of-a-kind photo
+    OR a file whose perceptual signature was too far from any sibling to
+    cluster at the chosen threshold.
+
+    Grouped by year folder, thumbnails inlined just like the dupes report.
+    """
+    by_year: dict[str, list[FileFingerprint]] = {}
+    for fingerprint in singletons:
+        relpath = os.path.relpath(fingerprint.path, library_root)
+        year = _year_from_relpath(relpath)
+        by_year.setdefault(year, []).append(fingerprint)
+
+    parts = [_HTML_HEAD]
+    parts.append(
+        f'<h1>Singletons — files not in any duplicate group — '
+        f'{os.path.basename(library_root) or library_root}</h1>'
+    )
+    total = sum(len(items) for items in by_year.values())
+    parts.append(
+        f'<div class="summary">'
+        f'  {total} singleton files across {len(by_year)} year buckets. '
+        f'  These have no detected duplicate at the current pHash threshold — '
+        f'  they may be one-of-a-kind originals OR cases where the dedup missed.'
+        f'</div>'
+    )
+    for year in sorted(by_year.keys()):
+        items = sorted(by_year[year], key=lambda fp: fp.path)
+        cards = "\n".join(
+            _render_card(fingerprint, position=1, library_root=library_root)
+            for fingerprint in items
+        )
+        parts.append(
+            f'<div class="group">'
+            f'  <div class="group-header" style="border-left-color: #555">'
+            f'    <span class="tier-badge" style="background: #555">{html.escape(year)}</span>'
+            f'    <span class="count">{len(items)} singletons</span>'
+            f'  </div>'
+            f'  <div class="cards">{cards}</div>'
+            f'</div>'
+        )
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
 def render_html_report(
     groups: Iterable[DuplicateGroup],
     library_root: str,

@@ -412,25 +412,33 @@ def group_duplicates(
     return groups
 
 
-def next_marked_path(fingerprint: FileFingerprint, letter: str) -> str:
-    """Build the ``<base>_<idx>_<letter>.<ext>`` form for a fingerprint, or
-    raise ValueError if the file's name isn't canonical."""
-    base_name = os.path.basename(fingerprint.path)
-    match = CANONICAL_FILENAME_PARTS_RE.match(base_name)
+def _parse_canonical_parts(path: str) -> tuple[str, str, str] | None:
+    """Return ``(base, idx, ext)`` for a canonical filename, or None if it's
+    not canonical."""
+    basename = os.path.basename(path)
+    match = CANONICAL_FILENAME_PARTS_RE.match(basename)
     if match is None:
-        raise ValueError(f"Not a canonical filename: {base_name}")
-    base = match.group("base")
-    idx = match.group("idx")
-    ext = match.group("ext")
-    new_name = f"{base}_{idx}_{letter}.{ext}"
-    return os.path.join(os.path.dirname(fingerprint.path), new_name)
+        return None
+    return match.group("base"), match.group("idx"), match.group("ext")
 
 
 def plan_mark(groups: Iterable[DuplicateGroup]) -> list[tuple[str, str, int]]:
     """Return ``[(old_path, new_path, tier), ...]`` for renaming files into _a/_b/_c form.
 
-    The winner of each group gets ``_a``, runners-up get ``_b``, ``_c``, ... in
-    quality order. Non-canonical filenames in a group are skipped (logged).
+    All files in a duplicate group share the WINNER's ``<base>_<idx>`` prefix,
+    differing only by the ``_<letter>`` suffix. This is what makes the marked
+    files sort adjacent in File Explorer:
+
+      group winner:   2014-01-01 13.00.00_1.jpg   -> 2014-01-01 13.00.00_1_a.jpg
+      group dup #2:   2014-01-01 13.00.00_14.jpg  -> 2014-01-01 13.00.00_1_b.jpg
+      group dup #3:   2014-01-01 13.00.00_29.jpg  -> 2014-01-01 13.00.00_1_c.jpg
+
+    Each file keeps its own extension (so .heic, .mp4, .mov pairs at the same
+    timestamp stay distinguishable).
+
+    If the WINNER's filename isn't canonical, the entire group is skipped —
+    we have no canonical prefix to share. If a non-winner is non-canonical,
+    only that file is dropped from the plan.
     """
     plan: list[tuple[str, str, int]] = []
     for group in groups:
@@ -440,13 +448,21 @@ def plan_mark(groups: Iterable[DuplicateGroup]) -> list[tuple[str, str, int]]:
                            "skipping. First member: %s",
                            len(ranked), ranked[0].path)
             continue
+        winner_parts = _parse_canonical_parts(ranked[0].path)
+        if winner_parts is None:
+            logger.warning("plan_mark skipping group: winner has non-canonical name %s",
+                           ranked[0].path)
+            continue
+        shared_base, shared_idx, _winner_ext = winner_parts
         for letter, fingerprint in zip(string.ascii_lowercase, ranked):
-            try:
-                new_path = next_marked_path(fingerprint, letter)
-            except ValueError as exc:
-                logger.warning("plan_mark skipping non-canonical %s: %s",
-                               fingerprint.path, exc)
+            file_parts = _parse_canonical_parts(fingerprint.path)
+            if file_parts is None:
+                logger.warning("plan_mark skipping non-canonical member %s",
+                               fingerprint.path)
                 continue
+            _file_base, _file_idx, file_ext = file_parts
+            new_name = f"{shared_base}_{shared_idx}_{letter}.{file_ext}"
+            new_path = os.path.join(os.path.dirname(fingerprint.path), new_name)
             if new_path != fingerprint.path:
                 plan.append((fingerprint.path, new_path, group.tier))
     return plan

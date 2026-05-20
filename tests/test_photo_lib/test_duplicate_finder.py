@@ -204,14 +204,55 @@ class TestPlanMark(unittest.TestCase):
         )
         plan = duplicate_finder.plan_mark([group])
         plan_by_old = {os.path.basename(o): os.path.basename(n) for o, n, _ in plan}
+        # The winner's _N (_1) becomes the SHARED group prefix, so both files
+        # sort adjacent in File Explorer. Winner keeps _1 with _a; the dup at
+        # _2 takes the winner's _1 with _b instead of staying at _2.
         self.assertEqual(
             plan_by_old["2026-04-12 09.15.30_1.jpg"],
             "2026-04-12 09.15.30_1_a.jpg",
         )
         self.assertEqual(
             plan_by_old["2026-04-12 09.15.30_2.jpg"],
-            "2026-04-12 09.15.30_2_b.jpg",
+            "2026-04-12 09.15.30_1_b.jpg",
         )
+
+    def test_loser_uses_winner_idx_for_adjacency(self):
+        # The whole point of the marked form: a dup at _14 doesn't stay at
+        # _14_b (which would sort far away from the winner's _1_a). It uses
+        # the winner's _1 so it sorts adjacent.
+        group = duplicate_finder.DuplicateGroup(
+            tier=1,
+            fingerprints=[
+                self._bare_fingerprint("/lib/2014-01-01 13.00.00_1.jpg", 100_000),
+                self._bare_fingerprint("/lib/2014-01-01 13.00.00_14.jpg", 50_000),
+                self._bare_fingerprint("/lib/2014-01-01 13.00.00_29.jpg", 50_000),
+            ],
+        )
+        plan = duplicate_finder.plan_mark([group])
+        new_names = sorted(os.path.basename(n) for _, n, _ in plan)
+        self.assertEqual(new_names, [
+            "2014-01-01 13.00.00_1_a.jpg",
+            "2014-01-01 13.00.00_1_b.jpg",
+            "2014-01-01 13.00.00_1_c.jpg",
+        ])
+
+    def test_each_file_keeps_its_own_extension_in_group(self):
+        # A group can mix extensions (e.g., a video and its sidecar were
+        # accidentally pixel-hashed the same way). Each file uses the
+        # winner's _N as the shared prefix but its own extension on output.
+        group = duplicate_finder.DuplicateGroup(
+            tier=2,
+            fingerprints=[
+                self._bare_fingerprint("/lib/2014-01-01 13.00.00_1.heic", 100_000, width=200, height=200),
+                self._bare_fingerprint("/lib/2014-01-01 13.00.00_5.mp4", 100_000, width=100, height=100),
+            ],
+        )
+        plan = duplicate_finder.plan_mark([group])
+        new_names = sorted(os.path.basename(n) for _, n, _ in plan)
+        self.assertEqual(new_names, [
+            "2014-01-01 13.00.00_1_a.heic",
+            "2014-01-01 13.00.00_1_b.mp4",
+        ])
 
     def test_size_breaks_dimension_tie(self):
         group = duplicate_finder.DuplicateGroup(
@@ -223,10 +264,15 @@ class TestPlanMark(unittest.TestCase):
         )
         plan = duplicate_finder.plan_mark([group])
         plan_by_old = {os.path.basename(o): os.path.basename(n) for o, n, _ in plan}
-        # _2 has the bigger size with equal dimensions — it wins _a.
+        # _2 has the bigger size with equal dimensions — it wins _a and its
+        # _2 becomes the shared group prefix.
         self.assertEqual(
             plan_by_old["2026-04-12 09.15.30_2.jpg"],
             "2026-04-12 09.15.30_2_a.jpg",
+        )
+        self.assertEqual(
+            plan_by_old["2026-04-12 09.15.30_1.jpg"],
+            "2026-04-12 09.15.30_2_b.jpg",
         )
 
     def test_non_canonical_filename_skipped(self):

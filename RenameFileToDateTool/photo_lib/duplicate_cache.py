@@ -130,6 +130,27 @@ class FingerprintCache:
             cursor.execute("DELETE FROM fingerprints WHERE path = ?", (path,))
         self._connection.commit()
 
+    def rename(self, old_path: str, new_path: str) -> bool:
+        """Update the path key of a cached fingerprint after the file moved.
+
+        Lets a ``mark``/``finalize`` pass shuffle filenames without invalidating
+        the expensive hash data — a subsequent ``report`` can then read the
+        cache directly and produce a refreshed view with the new filenames,
+        no re-scan needed.
+
+        Returns True iff an entry was actually moved (False if old_path wasn't
+        in the cache, or if new_path was already occupied — in which case the
+        caller probably has a worse bug).
+        """
+        with closing(self._connection.cursor()) as cursor:
+            cursor.execute(
+                "UPDATE fingerprints SET path = ? WHERE path = ?",
+                (new_path, old_path),
+            )
+            moved = cursor.rowcount > 0
+        self._connection.commit()
+        return moved
+
 
 def default_cache_path(library_root: str) -> str:
     return os.path.join(library_root, DEFAULT_CACHE_FILENAME)

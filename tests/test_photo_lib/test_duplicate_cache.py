@@ -86,6 +86,28 @@ class TestFingerprintCache(unittest.TestCase):
                 cache.forget("/lib/a.jpg")
                 self.assertIsNone(cache.lookup("/lib/a.jpg", 1024, 1700000000.0))
 
+    def test_rename_updates_path_key(self):
+        # After a mark step renames a file on disk, the cache rename must
+        # preserve the same hash data under the new path so a subsequent
+        # report can read it without a re-scan.
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = os.path.join(folder, "cache.db")
+            with FingerprintCache(db_path) as cache:
+                stored = _image_fp("/lib/a.jpg")
+                cache.store(stored)
+                moved = cache.rename("/lib/a.jpg", "/lib/a_a.jpg")
+                self.assertTrue(moved)
+                self.assertIsNone(cache.lookup("/lib/a.jpg", stored.size, stored.mtime))
+                got = cache.lookup("/lib/a_a.jpg", stored.size, stored.mtime)
+                self.assertIsNotNone(got)
+                self.assertEqual(got.file_sha256, stored.file_sha256)
+
+    def test_rename_missing_path_returns_false(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = os.path.join(folder, "cache.db")
+            with FingerprintCache(db_path) as cache:
+                self.assertFalse(cache.rename("/lib/nope.jpg", "/lib/nope_a.jpg"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,10 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 sys.path.insert(0, os.path.join(REPO_ROOT, 'RenameFileToDateTool'))
 
 from photo_lib.duplicate_finder import DuplicateGroup, FileFingerprint  # noqa: E402
-from photo_lib.duplicate_report import render_html_report  # noqa: E402
+from photo_lib.duplicate_report import (  # noqa: E402
+    render_html_report,
+    render_singletons_html_report,
+)
 
 
 def _fp(path: str, size: int = 1000) -> FileFingerprint:
@@ -50,6 +53,33 @@ class TestRenderHtmlReport(unittest.TestCase):
         html_text = render_html_report(groups, "/lib")
         self.assertNotIn("<script>alert.jpg", html_text)
         self.assertIn("&lt;script&gt;alert.jpg", html_text)
+
+
+class TestRenderSingletonsHtmlReport(unittest.TestCase):
+    def test_empty_singletons_still_well_formed(self):
+        html_text = render_singletons_html_report([], "/lib")
+        self.assertIn("<html>", html_text)
+        self.assertIn("0 singleton files", html_text)
+
+    def test_singletons_grouped_by_year_folder(self):
+        # Mix files from two year folders + one outside any year.
+        fingerprints = [
+            _fp("/lib/2014/photo1.jpg"),
+            _fp("/lib/2014/photo2.jpg"),
+            _fp("/lib/2026/clip.jpg"),
+            _fp("/lib/loose.jpg"),
+        ]
+        html_text = render_singletons_html_report(fingerprints, "/lib")
+        self.assertIn("4 singleton files across 3 year buckets", html_text)
+        self.assertIn(">2014<", html_text)
+        self.assertIn(">2026<", html_text)
+        self.assertIn(">(no year)<", html_text)
+
+    def test_year_folder_with_spaces_recognised(self):
+        # "2000 - 2010" is a valid year-folder in the master library convention.
+        fingerprints = [_fp("/lib/2000 - 2010/old.jpg")]
+        html_text = render_singletons_html_report(fingerprints, "/lib")
+        self.assertIn(">2000 - 2010<", html_text)
 
 
 if __name__ == "__main__":

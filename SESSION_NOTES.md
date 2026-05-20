@@ -253,15 +253,51 @@ Before running the combine, the user copied to E: (external):
 
 Now safe to run the combined-library workflow.
 
-### 15. Pilot run on year 2014
+### 15. Pilot run on year 2014 — caught a data-loss bug
 
-Started a single-year pilot (2014: 782 master + 852 PhotosCopy ≈ 1700 files) before committing to the full library run. The pilot chains:
+Started a single-year pilot (2014: 852 master + 782 PhotosCopy = 1634 files) before committing to the full library run. The pilot chains:
 1. `combine_libraries` master/2014 + PhotosCopy/2014 → `F:\PhotosCombined_pilot`
 2. `normalize_canonical_names` on the pilot dest
 3. `find_duplicate_photos.py scan`
 4. `find_duplicate_photos.py report --phash-threshold 8`
 
-Initial bash-syntax invocation failed (PowerShell `$var = "..."` syntax in bash); retried via the PowerShell tool. Pilot running in the background.
+**The pilot caught a silent data-loss bug** in `combine_libraries.plan_combine` (commit `26b7ae8`): master has uppercase extensions (`.JPG`, `.MOV`); PhotosCopy has lowercase (`.jpg`, `.mov`). Python's case-sensitive string compare in the collision-detection slot_set treated `_1.JPG` and `_1.jpg` as distinct dest paths — both got planned. But NTFS is case-insensitive: when the second copy hit disk, it silently overwrote the first. In 2014 alone, 286 master files would have been lost without warning. Master itself was untouched (we copy from sources, not into them), but the pilot dest ended up with 1349 files instead of 1634.
+
+**Fix**: lowercase the slot_set entries and the membership tests in `_resolve_dest_name_against_set`. Original-case filenames preserved on disk; only the COMPARISON is case-folded. Added 4 regression tests:
+- `.JPG` + `.jpg` in two sources detected as a collision → second bumps to `_2.jpg`
+- Both files exist in dest with their original bytes intact after apply
+- Pre-existing uppercase dest content blocks an incoming lowercase source
+- Four-way case variation (`.JPG/.Jpg/.jPg/.jpg`) all collide pairwise
+
+Pilot v2 ran clean: 1634 files preserved end-to-end (matches sources exactly). 650 case-insensitive collisions were detected and renamed during combine. 784 duplicate groups at `--phash-threshold 8`.
+
+### 16. Mark-step improvements driven by pilot feedback (commit `abe5fe3`)
+
+Three changes after looking at the pilot's `mark` dry-run output:
+
+**(a) Adjacent-sort marking.** Pre-fix `mark` kept each file's own `_N` and just appended a letter. A group at `_1, _14, _29` produced `_1_a, _14_b, _29_c` — which sort scattered across the folder, defeating the whole point of marking. Now the winner's `_N` becomes the SHARED group prefix: `_1_a, _1_b, _1_c`. Each file keeps its own extension (so `.heic + .mp4 + .mov` pairs at one timestamp stay distinguishable within a group).
+
+**(b) Cache-preserving renames.** `mark`/`finalize` previously called `cache.forget(old_path)` after each rename, invalidating the expensive hash data. Re-running `report` after `mark` would have shown an empty report (old paths gone from cache, new paths never added). Added `cache.rename(old, new)` to `photo_lib/duplicate_cache.py`. `mark` and `finalize` now use it — the hash data is preserved under the new path, so a subsequent `report` reads the cache directly and writes a refreshed HTML with the post-`mark` filenames. **No re-scan needed.** Saves an hour on the full library.
+
+**(c) Singletons-by-year report.** `report` now also writes `singletons_report.html` alongside `duplicate_report.html`. Lists files that didn't cluster with anything at the chosen pHash threshold, grouped by year folder. Useful for spotting photos that exist in only one source library, or for catching cases the dedup missed. On the 2014 pilot: 57 singletons out of 1634 files; 0.8 MB report.
+
+Tests: +7 in this commit (cache rename, plan_mark winner-idx, mixed-extension group preservation, three-file adjacency, singletons grouping).
+
+### 17. Finalize extended to handle multi-survivor groups
+
+The pre-existing `finalize` only handled the lone-survivor case: a `_a`/`_b`/`_c` group where the user kept exactly one file got the `_<letter>` suffix stripped back to canonical form. Multi-survivor case (user keeps 2+ from a group because they look visually distinct on review) was a no-op — the files would be stuck with non-canonical names indefinitely.
+
+Extended: when 2+ letters survive a group, the first survivor (alphabetically — usually `_a`) takes the group's original idx, and subsequent survivors get the next free idx in that timestamp bucket. The algorithm processes ALL `_a` survivors across the folder before any `_b` survivors, so an earlier group's `_b` overflow can't grab the idx a later group's `_a` was about to claim.
+
+Edge cases covered by tests:
+- Lone `_a` survivor → stripped to canonical (unchanged)
+- Lone `_b` survivor (user deleted `_a`) → also stripped to canonical
+- `_a + _b` both kept → `_a → _N`, `_b → _N+1`
+- `_a + _b` both kept, but `_N+1` already occupied by an unrelated canonical file → `_b` bumps to next free
+- Two adjacent groups both with `_a + _b` → all four `_a`s claim their preferred slots first, then `_b`s overflow into next free
+- `_a` survivor whose canonical `_N` is now occupied by something else → bumps to next free instead of skipping
+
+286 tests passing now (was 283 → +3 net for the multi-survivor cases).
 
 ---
 

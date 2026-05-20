@@ -469,37 +469,88 @@ def plan_mark(groups: Iterable[DuplicateGroup]) -> list[tuple[str, str, int]]:
 
 
 def plan_finalize(root: str) -> list[tuple[str, str]]:
-    """After manual review, find ``<base>_<idx>_<letter>`` files whose siblings
-    are gone, and propose stripping the ``_<letter>`` suffix.
+    """After manual review, strip the ``_<letter>`` suffix from marked files.
 
-    A 'sibling' is any file with the same ``<base>_<idx>_<other-letter>.<ext>``
-    where ``other-letter != letter``. If none exist for a given file, it's a
-    'lone survivor' and gets demoted back to ``<base>_<idx>.<ext>``.
+    Two cases:
+
+    - **Lone survivor** (1 letter remaining in the group): the file gets
+      demoted back to ``<base>_<idx>.<ext>``. This is the common case —
+      the user kept the winning ``_a`` copy and deleted the rest.
+
+    - **Multi-survivor** (2+ letters remain): the user decided some of the
+      group's members aren't actually duplicates. The first surviving letter
+      (alphabetically — usually ``_a``, the winner) takes the group's
+      original ``<idx>``; subsequent survivors are assigned the next free
+      indices in that timestamp bucket (``<idx>+1``, ``<idx>+2``, … bumping
+      past any canonical file already there).
+
+    All ``_a`` survivors across the folder are processed first so they each
+    get their preferred ``<idx>`` before overflow allocations compete for
+    leftovers. Without this two-pass order, an earlier group's ``_b``
+    overflow could grab the idx that a later group's ``_a`` was about to
+    claim.
     """
     plan: list[tuple[str, str]] = []
     for current_dir, _subdirs, filenames in os.walk(root):
-        marked = {}  # (base, idx) -> {letter: filename}
+        # Bucket every file in the folder.
+        marked: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
+        used_canonical: dict[str, set[int]] = {}
         for name in filenames:
-            match = MARKED_FILENAME_RE.match(name)
-            if not match:
+            marked_match = MARKED_FILENAME_RE.match(name)
+            if marked_match:
+                key = (marked_match.group("base"), marked_match.group("idx"))
+                marked.setdefault(key, []).append((
+                    marked_match.group("letter"),
+                    name,
+                    marked_match.group("ext"),
+                ))
                 continue
-            key = (match.group("base"), match.group("idx"))
-            marked.setdefault(key, []).append((match.group("letter"), name, match.group("ext")))
-        for (base, idx), entries in marked.items():
-            if len(entries) > 1:
-                # Still has siblings — leave them all alone.
-                continue
-            letter, name, ext = entries[0]
-            old_path = os.path.join(current_dir, name)
-            new_name = f"{base}_{idx}.{ext}"
-            new_path = os.path.join(current_dir, new_name)
-            if os.path.exists(new_path):
-                # A canonical-name file already exists at the target; don't clobber it.
-                logger.warning(
-                    "finalize: target exists, skipping %s -> %s", name, new_name
-                )
-                continue
-            plan.append((old_path, new_path))
+            canonical_match = CANONICAL_FILENAME_PARTS_RE.match(name)
+            if canonical_match:
+                used_canonical.setdefault(
+                    canonical_match.group("base"), set()
+                ).add(int(canonical_match.group("idx")))
+
+        # Sort each group's entries by letter so position 0 is always _a.
+        for entries in marked.values():
+            entries.sort(key=lambda triple: triple[0])
+
+        # Process by position-within-group, then by (base, idx) — so every
+        # _a across all groups gets its preferred slot before any _b looks.
+        sorted_group_keys = sorted(marked.keys())
+        max_letters = max((len(items) for items in marked.values()), default=0)
+        for position in range(max_letters):
+            for group_key in sorted_group_keys:
+                entries = marked[group_key]
+                if position >= len(entries):
+                    continue
+                base, original_idx_str = group_key
+                original_idx = int(original_idx_str)
+                _letter, name, ext = entries[position]
+
+                # Preferred target: original_idx + position. Bump past
+                # anything already taken in this base's bucket.
+                target_idx = original_idx + position
+                bucket = used_canonical.setdefault(base, set())
+                while target_idx in bucket:
+                    target_idx += 1
+                bucket.add(target_idx)
+
+                new_name = f"{base}_{target_idx}.{ext}"
+                old_path = os.path.join(current_dir, name)
+                new_path = os.path.join(current_dir, new_name)
+                if new_path == old_path:
+                    continue
+                if os.path.exists(new_path):
+                    # Tracked state says the slot is free but disk disagrees —
+                    # likely a non-canonical filename we didn't index. Safer
+                    # to skip than clobber.
+                    logger.warning(
+                        "finalize: target exists, skipping %s -> %s",
+                        name, new_name,
+                    )
+                    continue
+                plan.append((old_path, new_path))
     return plan
 
 

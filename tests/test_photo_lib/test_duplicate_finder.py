@@ -311,17 +311,82 @@ class TestPlanFinalize(unittest.TestCase):
         self.assertEqual(os.path.basename(plan[0][1]),
                          "2026-04-12 09.15.30_1.jpg")
 
-    def test_pair_still_present_not_finalized(self):
+    def test_lone_non_a_survivor_also_demoted(self):
+        # If the user kept _b and deleted _a, the survivor still gets demoted
+        # to the canonical idx — we don't require the survivor to be _a.
+        self._touch("2026-04-12 09.15.30_1_b.jpg")
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(os.path.basename(plan[0][1]),
+                         "2026-04-12 09.15.30_1.jpg")
+
+    def test_multi_survivor_each_gets_distinct_canonical_idx(self):
+        # User kept _a and _b — they're not duplicates after all.
+        # _a takes the group's original idx (1); _b gets the next free (2).
         self._touch("2026-04-12 09.15.30_1_a.jpg")
         self._touch("2026-04-12 09.15.30_1_b.jpg")
         plan = duplicate_finder.plan_finalize(self.tmpdir)
-        self.assertEqual(plan, [])
+        by_old = {
+            os.path.basename(old): os.path.basename(new) for old, new in plan
+        }
+        self.assertEqual(by_old["2026-04-12 09.15.30_1_a.jpg"],
+                         "2026-04-12 09.15.30_1.jpg")
+        self.assertEqual(by_old["2026-04-12 09.15.30_1_b.jpg"],
+                         "2026-04-12 09.15.30_2.jpg")
 
-    def test_canonical_target_exists_skipped(self):
+    def test_multi_survivor_bumps_past_existing_canonical(self):
+        # If _1, _2 are already canonical files in the folder, the surviving
+        # _1_a and _1_b need to land beyond them.
+        self._touch("2026-04-12 09.15.30_2.jpg")  # unrelated canonical file
+        self._touch("2026-04-12 09.15.30_1_a.jpg")
+        self._touch("2026-04-12 09.15.30_1_b.jpg")
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        by_old = {
+            os.path.basename(old): os.path.basename(new) for old, new in plan
+        }
+        # _a wants _1: free, takes it.
+        # _b wants _2: taken by existing canonical, bumps to _3.
+        self.assertEqual(by_old["2026-04-12 09.15.30_1_a.jpg"],
+                         "2026-04-12 09.15.30_1.jpg")
+        self.assertEqual(by_old["2026-04-12 09.15.30_1_b.jpg"],
+                         "2026-04-12 09.15.30_3.jpg")
+
+    def test_a_survivors_processed_before_b_overflow_across_groups(self):
+        # Two adjacent groups both have _a and _b. Without two-pass ordering,
+        # group _1's _b would grab the _2 slot before group _2's _a got a
+        # chance to claim it. With two-pass, every _a is processed first.
+        self._touch("2026-04-12 09.15.30_1_a.jpg")
+        self._touch("2026-04-12 09.15.30_1_b.jpg")
+        self._touch("2026-04-12 09.15.30_2_a.jpg")
+        self._touch("2026-04-12 09.15.30_2_b.jpg")
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        by_old = {
+            os.path.basename(old): os.path.basename(new) for old, new in plan
+        }
+        # Both _a survivors get their preferred indices.
+        self.assertEqual(by_old["2026-04-12 09.15.30_1_a.jpg"],
+                         "2026-04-12 09.15.30_1.jpg")
+        self.assertEqual(by_old["2026-04-12 09.15.30_2_a.jpg"],
+                         "2026-04-12 09.15.30_2.jpg")
+        # _b overflows have to share _3 and _4 (whichever comes first in
+        # the deterministic processing order).
+        b_targets = {
+            by_old["2026-04-12 09.15.30_1_b.jpg"],
+            by_old["2026-04-12 09.15.30_2_b.jpg"],
+        }
+        self.assertEqual(b_targets, {
+            "2026-04-12 09.15.30_3.jpg",
+            "2026-04-12 09.15.30_4.jpg",
+        })
+
+    def test_canonical_target_exists_demotes_to_next_free(self):
+        # Pre-change: this case was skipped. New: bump to next free idx.
         self._touch("2026-04-12 09.15.30_1_a.jpg")
         self._touch("2026-04-12 09.15.30_1.jpg")  # already canonical at the target name
         plan = duplicate_finder.plan_finalize(self.tmpdir)
-        self.assertEqual(plan, [])
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(os.path.basename(plan[0][1]),
+                         "2026-04-12 09.15.30_2.jpg")
 
 
 class TestHammingDistance(unittest.TestCase):

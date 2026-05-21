@@ -419,3 +419,56 @@ Surveyed test coverage and found a gap: per-script tests existed but no test cha
 4. **3 `.heic` files containing `.heif` payload** in `2026` — intentional per yesterday's convention, but document/encode this in `audit_master.py` so it stops flagging them.
 5. **Manual fixes from PhotosCopy still ad-hoc** — folder rename `2000-2010` → `2000 - 2010`, extension-mismatch renames (170 files), wrong-year-folder moves (10 files), extensionless MOV → `.mov` (1 file). All would need to be redone by hand if rebuilding PhotosCopy from `F:\Photos`. Could be codified as small fixers if needed.
 6. **One Facebook-style USB file** — `482988_10151241204359080_890635342_n.jpg` skipped during USB staging; has no parseable date in the filename. Manual handling required if it should join the library.
+
+---
+
+## 2026-05-21 (continued) — Pilot v3, three new report features, source-label provenance
+
+### 22. 2014 pilot v3 — hardware-failure recovery
+
+Replay of the 2014 pilot after a mid-combine drive disconnect. The partial dest (42 files, with one suspect 165 MB MOV whose mtime didn't match the source because `shutil.copy2`'s `copyfile + copystat` got cut between phases) was wiped because `combine_libraries` has no resume — restarting on top of partial state would have inflated the dest with duplicates. Sources are read-only by design, so wipe-and-restart is safe.
+
+End-to-end pilot v3 results (1634 files): combine OK, normalize OK, scan 1634/1634 hashed, report 784 duplicate groups + 57 singletons + new stats page. Mark applied 1577 renames; user deleted 18 during manual review; finalize cleaned up 1556 surviving markers. Final state: 1616 files, all canonical, 0 marked.
+
+**Pipeline robustness assessment**: only `find_duplicate_photos scan` is fully crash-safe (SQLite cache with size+mtime invalidation). `combine_libraries` has no resume and `shutil.copy2` is not atomic. `normalize_canonical_names` and `mark/finalize` converge on rerun but with stale cache rows. Not blockers — sources are read-only, so worst case is "destination is junk, throw it away, restart."
+
+### 23. Singletons report: year derivation falls back to the filename
+
+`duplicate_report._year_from_relpath` required `len(parts) >= 2` and labelled every file in a flat dest (no year subfolders — e.g. a pilot sourced from `\2014\` directly) as `(no year)`. Fixed: when the folder hierarchy doesn't yield a year, fall back to the canonical `YYYY-` prefix on the filename, with bundled-early routing so 2005-2010 photos collapse to `2000 - 2010` regardless of flat/nested layout. +2 tests.
+
+### 24. Statistics HTML report
+
+New `render_stats_html_report` in `photo_lib/duplicate_report.py`, emitted alongside `duplicate_report.html` and `singletons_report.html` as `stats_report.html`. Tables: by year, by extension, by media kind, by source library (when manifest present), by duplicate tier. Headline: "Manual review of the N groups could reclaim up to X GB". For the 2014 pilot that came to 11.1 GB across 784 groups — roughly half the library. +4 tests.
+
+### 25. Source-label provenance through combine → mark → finalize → report
+
+Goal: see at a glance which source library a duplicate came from, so manual review can use it as a tie-breaker. Five-part mechanism:
+
+- **`photo_lib/source_manifest.py`** — new sidecar SQLite at `<root>/.source_manifest.db` mapping `dest_path → source_label`. Same `_canonical_key = os.path.normpath` boundary as the duplicate cache.
+- **`derive_source_label(source_root)`** — auto rule: basename of source, with a step-up to the parent folder when the basename matches a year pattern (`\d{4}` or `\d{4} - \d{4}`). For the pilot, `D:\...\Pictures and Videos\2014` becomes `Pictures-and-Videos` and `F:\PhotosCopy\2014` becomes `PhotosCopy`. Labels are sanitised to `[A-Za-z0-9-]+` so `__src_<label>__from_<base>` markers parse unambiguously.
+- **`plan_combine`** now returns `(src, dest, source_label)` and writes the manifest as it copies. Two sources deriving to the same label is a hard error (`SystemExit`).
+- **`plan_mark(groups, source_label_lookup=...)`** stamps `__src_<label>` onto every marked filename. `MARKED_FILENAME_RE` extended to optionally capture the marker. Combined form: `<base>_<idx>_<letter>__src_<label>[__from_<origin_base>].<ext>`. `plan_finalize` reconstructs canonical without the marker, so labels drop off naturally at finalize.
+- **`duplicate_report`** shows an `src: <label>` badge on every card (duplicate + singleton reports) and adds a "By source library" table to the stats report. `normalize_canonical_names` keeps manifest paths in sync after each canonicalising rename.
+
+**Live pilot result**: stats show master 852 (52.1%) + takeout 782 (47.9%) — matches the pre-combine source counts exactly. After mark, every duplicate filename carries `__src_Pictures-and-Videos` or `__src_PhotosCopy`, and cross-date losers also carry `__from_<original_base>` so both dates remain visible. Example marked pair sitting adjacent in Explorer:
+
+```
+2014-12-28 15.45.00_4_a__src_PhotosCopy.jpg                                     (winner)
+2014-12-28 15.45.00_4_b__src_Pictures-and-Videos__from_2014-12-28 14.45.00.jpg  (was 14.45.00_4)
+```
+
+### 26. Bug fix during the live run: two-phase manifest renames
+
+First normalize attempt crashed mid-loop with `sqlite3.IntegrityError: UNIQUE constraint failed: source_labels.path`. The bucket renumber produces plan entries like `_2.MOV → _4.mov` while another entry `_4.mov → _8.mov` is still pending — a naive per-row `UPDATE` collides on the first step because PhotosCopy's manifest row at `_4.mov` is still there. `apply_rename_plan` already stages the on-disk renames through `.__renaming__` temp paths to sidestep exactly this; the manifest needed the same treatment.
+
+Fix: `SourceManifest.rename_many(pairs)` updates every old key to a unique `.__renaming__` temp key (phase 1) and then to its final target (phase 2). Mirrors the on-disk staging. `normalize_canonical_names` and `find_duplicate_photos {mark,finalize}` all call `rename_many` now. Tests include a regression case replicating the pilot's exact pattern.
+
+The partial-state recovery: disk was fully normalized (`apply_rename_plan` completed before the manifest update ran), but the manifest was half-updated. Wipe + rerun was simpler than partial repair, since combine writes the manifest from scratch as files copy.
+
+**Test suite**: 357 passing (was 304 → +53 for these changes).
+
+---
+
+## Open follow-ups added 2026-05-21
+
+7. **`combine_libraries` resume / atomic copy** — write to `.partial` + atomic rename, and skip-if-source-mtime-matches on rerun. Closes the bytes-vs-metadata gap that `shutil.copy2` leaves open and removes the "restart-creates-duplicates" sharp edge.

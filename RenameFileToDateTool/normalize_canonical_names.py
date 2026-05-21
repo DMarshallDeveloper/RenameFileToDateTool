@@ -34,6 +34,7 @@ from photo_lib.canonical_renumber import (
     plan_renames_recursive,
 )
 from photo_lib.logging_setup import configure_logging
+from photo_lib.source_manifest import SourceManifest, default_manifest_path
 from photo_lib.tk_picker import resolve_directory
 
 logger = logging.getLogger("photo_lib")
@@ -54,6 +55,24 @@ def normalize_tree(directory: str, dry_run: bool = False) -> None:
     logger.info("%s%d renames planned across %d folders.",
                 prefix, total_renames, len(plans_by_folder))
 
+    # If a combine-written source manifest exists alongside the library, keep
+    # its path keys in sync with every rename — otherwise `find_duplicate_photos
+    # mark` would lose source-label provenance for any file the canonicalizer
+    # touched (e.g. .jpeg → .jpg).
+    manifest_path = default_manifest_path(directory)
+    use_manifest = (not dry_run) and os.path.exists(manifest_path)
+
+    def _apply_with_manifest(plan):
+        if not use_manifest:
+            return apply_rename_plan(plan)
+        applied = apply_rename_plan(plan)
+        # rename_many staged via temp keys — the plan can include
+        # "_2.MOV -> _4.mov" while another entry already occupies _4.mov,
+        # which a single-row UPDATE would reject on the UNIQUE constraint.
+        with SourceManifest(manifest_path) as manifest:
+            manifest.rename_many([(r.old_path, r.new_path) for r in plan])
+        return applied
+
     for folder, plan in sorted(plans_by_folder.items()):
         folder_label = os.path.relpath(folder, directory)
         logger.info("%s[%s] %d renames", prefix, folder_label, len(plan))
@@ -66,7 +85,7 @@ def normalize_tree(directory: str, dry_run: bool = False) -> None:
                 rename.reason,
             )
         if not dry_run:
-            applied = apply_rename_plan(plan)
+            applied = _apply_with_manifest(plan)
             logger.info("  applied: %d", applied)
 
 

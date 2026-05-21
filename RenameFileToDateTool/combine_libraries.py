@@ -30,13 +30,38 @@ import shutil
 
 from photo_lib.filename_pattern import CANONICAL_FILENAME_PARTS_RE
 from photo_lib.logging_setup import configure_logging
+from photo_lib.source_manifest import (
+    SourceManifest,
+    default_manifest_path,
+    derive_source_label,
+)
 
 logger = logging.getLogger("photo_lib")
 
 
-def plan_combine(sources: list[str], dest: str) -> list[tuple[str, str]]:
-    """Return ``[(src_path, dest_path), ...]`` for the combine. Order matters:
-    a source that comes later loses ties (its ``_N`` gets bumped).
+def _labels_for_sources(sources: list[str]) -> list[str]:
+    """Derive a unique label per source. Raises ``SystemExit`` if two sources
+    derive to the same label — the user has to disambiguate by passing distinct
+    parent paths (or, eventually, an explicit ``--source-label`` flag)."""
+    labels = [derive_source_label(s) for s in sources]
+    seen: dict[str, str] = {}
+    for source, label in zip(sources, labels):
+        if label in seen:
+            raise SystemExit(
+                f"Source label collision: both {seen[label]!r} and {source!r} "
+                f"derive to label {label!r}. Move one of the source folders or "
+                f"rename it so the labels are distinct."
+            )
+        seen[label] = source
+    return labels
+
+
+def plan_combine(sources: list[str], dest: str) -> list[tuple[str, str, str]]:
+    """Return ``[(src_path, dest_path, source_label), ...]`` for the combine.
+
+    Order matters: a source that comes later loses ties (its ``_N`` gets
+    bumped). ``source_label`` carries provenance through to the manifest so
+    later steps can stamp ``__src_<label>`` onto marked filenames.
 
     Collision detection is CASE-INSENSITIVE — Windows NTFS, macOS HFS+, and
     most other consumer filesystems treat ``_1.JPG`` and ``_1.jpg`` as the
@@ -46,7 +71,8 @@ def plan_combine(sources: list[str], dest: str) -> list[tuple[str, str]]:
     name on disk). This bug ate 286 master files in the pilot run before it
     was caught.
     """
-    plan: list[tuple[str, str]] = []
+    labels = _labels_for_sources(sources)
+    plan: list[tuple[str, str, str]] = []
     # Track what each destination subfolder will contain after the plan is
     # applied — both real files already there and files we've planned to add —
     # so collision detection works even before anything is copied. Names are
@@ -61,7 +87,7 @@ def plan_combine(sources: list[str], dest: str) -> list[tuple[str, str]]:
             )
         return occupied[folder]
 
-    for source in sources:
+    for source, label in zip(sources, labels):
         for current_dir, _subdirs, filenames in os.walk(source):
             relpath = os.path.relpath(current_dir, source)
             dest_folder = os.path.join(dest, relpath) if relpath != "." else dest
@@ -76,7 +102,7 @@ def plan_combine(sources: list[str], dest: str) -> list[tuple[str, str]]:
                     dest_name = _resolve_dest_name_against_set(name, slot_set)
                 slot_set.add(dest_name.lower())
                 dest_path = os.path.join(dest_folder, dest_name)
-                plan.append((source_path, dest_path))
+                plan.append((source_path, dest_path, label))
     return plan
 
 
@@ -110,11 +136,16 @@ def _resolve_dest_name_against_set(source_name: str, occupied_names_lower: set[s
         counter += 1
 
 
-def apply_combine_plan(plan: list[tuple[str, str]]) -> int:
+def apply_combine_plan(
+    plan: list[tuple[str, str, str]],
+    manifest: SourceManifest | None = None,
+) -> int:
     copied = 0
-    for source_path, dest_path in plan:
+    for source_path, dest_path, source_label in plan:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         shutil.copy2(source_path, dest_path)
+        if manifest is not None:
+            manifest.set(dest_path, source_label)
         copied += 1
         if copied % 500 == 0:
             logger.info("  copied %d files", copied)
@@ -125,23 +156,31 @@ def combine(sources: list[str], dest: str, dry_run: bool = False) -> int:
     plan = plan_combine(sources, dest)
     prefix = "[DRY-RUN] " if dry_run else ""
     renames = sum(
-        1 for src, dst in plan
+        1 for src, dst, _ in plan
         if os.path.basename(src) != os.path.basename(dst)
     )
+    labels = sorted({label for _, _, label in plan})
     logger.info(
-        "%s%d files to copy (%d will be renamed on collision)",
-        prefix, len(plan), renames,
+        "%s%d files to copy from %d source(s) — labels: %s "
+        "(%d will be renamed on collision)",
+        prefix, len(plan), len(labels), ", ".join(labels), renames,
     )
     if dry_run:
-        for src, dst in plan[:25]:
+        for src, dst, label in plan[:25]:
             src_name = os.path.basename(src)
             dst_name = os.path.basename(dst)
             marker = " (RENAMED)" if src_name != dst_name else ""
-            logger.info("  %s -> %s%s", src, dst, marker)
+            logger.info("  [%s] %s -> %s%s", label, src, dst, marker)
         if len(plan) > 25:
             logger.info("  ... and %d more", len(plan) - 25)
         return len(plan)
-    return apply_combine_plan(plan)
+    if not plan:
+        # Nothing to do — don't create an empty dest folder or a manifest with
+        # no rows. Matches the historical "empty source = noop" contract.
+        return 0
+    os.makedirs(dest, exist_ok=True)
+    with SourceManifest(default_manifest_path(dest)) as manifest:
+        return apply_combine_plan(plan, manifest=manifest)
 
 
 if __name__ == "__main__":

@@ -45,9 +45,11 @@ from photo_lib.duplicate_finder import (
 from photo_lib.duplicate_report import (
     render_html_report,
     render_singletons_html_report,
+    render_stats_html_report,
 )
 from photo_lib.extensions import is_media, normalize_extension
 from photo_lib.logging_setup import configure_logging
+from photo_lib.source_manifest import SourceManifest, default_manifest_path
 from photo_lib.tk_picker import resolve_directory
 
 logger = logging.getLogger("photo_lib")
@@ -107,10 +109,23 @@ def _load_groups(root: str, cache_path: str | None, phash_threshold: int):
     )
 
 
+def _load_source_labels(root: str) -> dict[str, str]:
+    """Return ``{normalized_path -> source_label}`` from the combine manifest,
+    or ``{}`` if no manifest exists (library wasn't built via
+    ``combine_libraries``).
+    """
+    manifest_path = default_manifest_path(root)
+    if not os.path.exists(manifest_path):
+        return {}
+    with SourceManifest(manifest_path) as manifest:
+        return manifest.all_entries()
+
+
 def report(root: str, output_path: str, cache_path: str | None = None,
            phash_threshold: int = DEFAULT_PHASH_HAMMING_THRESHOLD) -> int:
     fingerprints, groups = _load_groups(root, cache_path, phash_threshold)
-    html_text = render_html_report(groups, root)
+    source_labels = _load_source_labels(root)
+    html_text = render_html_report(groups, root, source_labels=source_labels)
     with open(output_path, "w", encoding="utf-8") as fh:
         fh.write(html_text)
     logger.info("Wrote %d-group duplicate report to %s (phash_threshold=%d)",
@@ -118,15 +133,24 @@ def report(root: str, output_path: str, cache_path: str | None = None,
 
     grouped_paths = {fp.path for group in groups for fp in group.fingerprints}
     singletons = [fp for fp in fingerprints if fp.path not in grouped_paths]
-    singletons_path = os.path.join(
-        os.path.dirname(output_path) or ".",
-        "singletons_report.html",
+    report_dir = os.path.dirname(output_path) or "."
+    singletons_path = os.path.join(report_dir, "singletons_report.html")
+    singletons_html = render_singletons_html_report(
+        singletons, root, source_labels=source_labels,
     )
-    singletons_html = render_singletons_html_report(singletons, root)
     with open(singletons_path, "w", encoding="utf-8") as fh:
         fh.write(singletons_html)
     logger.info("Wrote %d-singleton report to %s",
                 len(singletons), singletons_path)
+
+    stats_path = os.path.join(report_dir, "stats_report.html")
+    stats_html = render_stats_html_report(
+        fingerprints, groups, root, source_labels=source_labels,
+    )
+    with open(stats_path, "w", encoding="utf-8") as fh:
+        fh.write(stats_html)
+    logger.info("Wrote stats report (%d files) to %s",
+                len(fingerprints), stats_path)
 
     return len(groups)
 
@@ -134,7 +158,8 @@ def report(root: str, output_path: str, cache_path: str | None = None,
 def mark(root: str, dry_run: bool, cache_path: str | None = None,
          phash_threshold: int = DEFAULT_PHASH_HAMMING_THRESHOLD) -> int:
     _fingerprints, groups = _load_groups(root, cache_path, phash_threshold)
-    plan = plan_mark(groups)
+    source_labels = _load_source_labels(root)
+    plan = plan_mark(groups, source_label_lookup=source_labels)
     prefix = "[DRY-RUN] " if dry_run else ""
     cross_folder = sum(
         1 for old, new, _ in plan
@@ -164,6 +189,14 @@ def mark(root: str, dry_run: bool, cache_path: str | None = None,
         with FingerprintCache(cache_path) as cache:
             for old_path, new_path, _ in plan:
                 cache.rename(old_path, new_path)
+        # Keep the source manifest in sync too, so subsequent report/finalize
+        # passes can still resolve labels for the renamed files. rename_many
+        # is the staged variant — handles plans where one entry's new path
+        # collides with another entry's old path.
+        manifest_path = default_manifest_path(root)
+        if os.path.exists(manifest_path):
+            with SourceManifest(manifest_path) as manifest:
+                manifest.rename_many([(o, n) for o, n, _ in plan])
     return len(plan)
 
 
@@ -198,6 +231,10 @@ def finalize(root: str, dry_run: bool, cache_path: str | None = None) -> int:
             with FingerprintCache(cache_path) as cache:
                 for old_path, new_path in plan:
                     cache.rename(old_path, new_path)
+        manifest_path = default_manifest_path(root)
+        if os.path.exists(manifest_path):
+            with SourceManifest(manifest_path) as manifest:
+                manifest.rename_many(plan)
     return len(plan)
 
 

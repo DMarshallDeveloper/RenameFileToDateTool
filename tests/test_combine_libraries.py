@@ -10,6 +10,10 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, 'RenameFileToDateTool'))
 
 import combine_libraries  # noqa: E402
+from photo_lib.source_manifest import (  # noqa: E402
+    SourceManifest,
+    default_manifest_path,
+)
 
 
 def _touch(folder: str, name: str, content: bytes | None = None) -> str:
@@ -21,9 +25,13 @@ def _touch(folder: str, name: str, content: bytes | None = None) -> str:
 
 
 def _names_recursive(root: str) -> set[str]:
+    # Excludes hidden sidecar files (.source_manifest.db etc) so tests focus
+    # on the photo content the combine produced.
     out: set[str] = set()
     for current_dir, _subdirs, filenames in os.walk(root):
         for name in filenames:
+            if name.startswith("."):
+                continue
             out.add(os.path.relpath(os.path.join(current_dir, name), root))
     return out
 
@@ -211,7 +219,7 @@ class TestCaseInsensitiveCollisions(unittest.TestCase):
         plan = combine_libraries.plan_combine(
             [self.source_a, self.source_b], self.dest,
         )
-        dest_basenames = [os.path.basename(dst) for _, dst in plan]
+        dest_basenames = [os.path.basename(dst) for _, dst, _ in plan]
         # The plan must allocate two distinct case-folded names. Source A
         # keeps its uppercase _1.JPG; source B bumps to _2.jpg.
         self.assertEqual(len(plan), 2)
@@ -266,7 +274,7 @@ class TestCaseInsensitiveCollisions(unittest.TestCase):
             [self.source_a, self.source_b, source_c], self.dest,
         )
         # All three must be distinct dest paths case-insensitively.
-        dest_names_lower = [os.path.basename(dst).lower() for _, dst in plan]
+        dest_names_lower = [os.path.basename(dst).lower() for _, dst, _ in plan]
         self.assertEqual(len(dest_names_lower), 3)
         self.assertEqual(len(set(dest_names_lower)), 3)
 
@@ -334,6 +342,105 @@ class TestEdgeCases(unittest.TestCase):
                 os.path.join('2014', 'IMG_0001_dup1.jpg'),
             },
         )
+
+
+class TestSourceManifestWriting(unittest.TestCase):
+    """The combine writes a sidecar manifest mapping each dest file to the
+    label of the source library it came from."""
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix='test_combine_manifest_')
+        self.dest = os.path.join(self.workdir, 'dest')
+        self.addCleanup(lambda: shutil.rmtree(self.workdir, ignore_errors=True))
+
+    def test_manifest_records_one_entry_per_copied_file(self):
+        source_master = os.path.join(self.workdir, 'master')
+        source_takeout = os.path.join(self.workdir, 'takeout')
+        _touch(os.path.join(source_master, '2014'),
+               '2014-01-01 13.00.00_1.jpg', b"M")
+        _touch(os.path.join(source_takeout, '2014'),
+               '2014-01-02 13.00.00_1.jpg', b"T")
+        combine_libraries.combine([source_master, source_takeout], self.dest)
+
+        manifest_path = default_manifest_path(self.dest)
+        self.assertTrue(os.path.exists(manifest_path),
+                        f"manifest not written at {manifest_path}")
+        with SourceManifest(manifest_path) as manifest:
+            entries = manifest.all_entries()
+        self.assertEqual(len(entries), 2)
+        labels_by_basename = {
+            os.path.basename(p): label for p, label in entries.items()
+        }
+        self.assertEqual(labels_by_basename['2014-01-01 13.00.00_1.jpg'], 'master')
+        self.assertEqual(labels_by_basename['2014-01-02 13.00.00_1.jpg'], 'takeout')
+
+    def test_manifest_records_collision_bumped_dest_path(self):
+        """When a source's file gets bumped to _2 on collision, the manifest
+        must point to the BUMPED dest path — otherwise mark wouldn't know which
+        source the survivor came from."""
+        source_a = os.path.join(self.workdir, 'A')
+        source_b = os.path.join(self.workdir, 'B')
+        _touch(os.path.join(source_a, '2014'),
+               '2014-01-01 13.00.00_1.jpg', b"AA")
+        _touch(os.path.join(source_b, '2014'),
+               '2014-01-01 13.00.00_1.jpg', b"BB")
+        combine_libraries.combine([source_a, source_b], self.dest)
+
+        with SourceManifest(default_manifest_path(self.dest)) as manifest:
+            entries = manifest.all_entries()
+        labels_by_basename = {
+            os.path.basename(p): label for p, label in entries.items()
+        }
+        self.assertEqual(labels_by_basename['2014-01-01 13.00.00_1.jpg'], 'A')
+        self.assertEqual(labels_by_basename['2014-01-01 13.00.00_2.jpg'], 'B')
+
+    def test_dry_run_does_not_write_manifest(self):
+        _touch(os.path.join(self.workdir, 'A', '2014'),
+               '2014-01-01 13.00.00_1.jpg')
+        combine_libraries.combine(
+            [os.path.join(self.workdir, 'A')], self.dest, dry_run=True,
+        )
+        # Dest itself shouldn't exist either, but explicitly the manifest must not.
+        self.assertFalse(os.path.exists(default_manifest_path(self.dest)))
+
+
+class TestSourceLabelCollision(unittest.TestCase):
+    """Two sources mustn't derive to the same label — that would erase
+    provenance for half the dest files."""
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix='test_combine_collision_')
+        self.addCleanup(lambda: shutil.rmtree(self.workdir, ignore_errors=True))
+
+    def test_year_basename_collisions_step_up_to_parent(self):
+        # Two sources both ending in /2014 — labels must come from the parent
+        # folders, NOT the year basename, so they end up distinct.
+        master_2014 = os.path.join(self.workdir, 'master', '2014')
+        backup_2014 = os.path.join(self.workdir, 'backup', '2014')
+        _touch(master_2014, '2014-01-01 13.00.00_1.jpg', b"M")
+        _touch(backup_2014, '2014-01-02 13.00.00_1.jpg', b"B")
+        dest = os.path.join(self.workdir, 'dest')
+
+        combine_libraries.combine([master_2014, backup_2014], dest)
+
+        with SourceManifest(default_manifest_path(dest)) as manifest:
+            entries = manifest.all_entries()
+        labels = set(entries.values())
+        self.assertEqual(labels, {'master', 'backup'})
+
+    def test_identical_source_basenames_raise_collision_error(self):
+        # Two sources both named "PhotosCopy" can't be disambiguated — auto
+        # derivation must error rather than silently writing one label.
+        path_a = os.path.join(self.workdir, 'A', 'PhotosCopy')
+        path_b = os.path.join(self.workdir, 'B', 'PhotosCopy')
+        os.makedirs(path_a)
+        os.makedirs(path_b)
+
+        with self.assertRaises(SystemExit) as caught:
+            combine_libraries.plan_combine(
+                [path_a, path_b], os.path.join(self.workdir, 'dest'),
+            )
+        self.assertIn("collision", str(caught.exception).lower())
 
 
 if __name__ == '__main__':

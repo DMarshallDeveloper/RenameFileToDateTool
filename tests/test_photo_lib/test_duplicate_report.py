@@ -11,14 +11,18 @@ from photo_lib.duplicate_finder import DuplicateGroup, FileFingerprint  # noqa: 
 from photo_lib.duplicate_report import (  # noqa: E402
     render_html_report,
     render_singletons_html_report,
+    render_stats_html_report,
 )
 
 
-def _fp(path: str, size: int = 1000) -> FileFingerprint:
+def _fp(
+    path: str, size: int = 1000, media_kind: str = "image",
+    width: int | None = 100, height: int | None = 100,
+) -> FileFingerprint:
     return FileFingerprint(
-        path=path, size=size, mtime=0.0, media_kind="image",
+        path=path, size=size, mtime=0.0, media_kind=media_kind,
         file_sha256="x", pixel_sha256="y", phash_hex="z",
-        frame_phashes_hex=None, width=100, height=100,
+        frame_phashes_hex=None, width=width, height=height,
     )
 
 
@@ -128,6 +132,171 @@ class TestRenderSingletonsHtmlReport(unittest.TestCase):
         fingerprints = [_fp("/lib/2000 - 2010/old.jpg")]
         html_text = render_singletons_html_report(fingerprints, "/lib")
         self.assertIn(">2000 - 2010<", html_text)
+
+    def test_flat_layout_derives_year_from_filename(self):
+        # Pilot dests are flat — every file sits directly under the root with
+        # a canonical YYYY- prefix. Year must come from the filename, not the
+        # absent year folder.
+        fingerprints = [
+            _fp("/lib/2014-06-15 10.00.00_1.jpg"),
+            _fp("/lib/2014-07-02 14.30.00_3.jpg"),
+            _fp("/lib/2026-01-04 09.00.00_1.jpg"),
+        ]
+        html_text = render_singletons_html_report(fingerprints, "/lib")
+        self.assertIn("3 singleton files across 2 year buckets", html_text)
+        self.assertIn(">2014<", html_text)
+        self.assertIn(">2026<", html_text)
+        self.assertNotIn(">(no year)<", html_text)
+
+    def test_flat_layout_bundled_early_year_routes_to_bundle(self):
+        # A 2005 photo in a flat dest must collapse to the bundled-early
+        # bucket "2000 - 2010" so flat and nested layouts agree.
+        fingerprints = [_fp("/lib/2005-08-11 12.00.00_1.jpg")]
+        html_text = render_singletons_html_report(fingerprints, "/lib")
+        self.assertIn(">2000 - 2010<", html_text)
+        self.assertNotIn(">2005<", html_text)
+
+
+class TestSourceLabelRendering(unittest.TestCase):
+    """Source labels surface in all three reports when supplied."""
+
+    def test_duplicate_card_shows_source_label(self):
+        groups = [
+            DuplicateGroup(
+                tier=1,
+                fingerprints=[
+                    _fp("/lib/2014/2014-06-15 10.00.00_1.jpg"),
+                    _fp("/lib/2014/2014-06-15 10.00.00_2.jpg"),
+                ],
+            ),
+        ]
+        labels = {
+            os.path.normpath("/lib/2014/2014-06-15 10.00.00_1.jpg"): "master",
+            os.path.normpath("/lib/2014/2014-06-15 10.00.00_2.jpg"): "takeout",
+        }
+        html_text = render_html_report(groups, "/lib", source_labels=labels)
+        self.assertIn("src: master", html_text)
+        self.assertIn("src: takeout", html_text)
+
+    def test_no_source_label_when_path_not_in_lookup(self):
+        groups = [
+            DuplicateGroup(
+                tier=1,
+                fingerprints=[
+                    _fp("/lib/2014/orphan.jpg"),
+                    _fp("/lib/2014/known.jpg"),
+                ],
+            ),
+        ]
+        labels = {os.path.normpath("/lib/2014/known.jpg"): "X"}
+        html_text = render_html_report(groups, "/lib", source_labels=labels)
+        self.assertIn("src: X", html_text)
+        # Orphan got no marker — but there's only one src-badge in the document.
+        self.assertEqual(html_text.count("src-badge"), 2)  # CSS class def + one badge
+
+    def test_source_label_html_escaped(self):
+        # A maliciously-crafted label must not inject markup. Sanitisation
+        # restricts label charset upstream, but the renderer must still escape.
+        groups = [DuplicateGroup(
+            tier=1,
+            fingerprints=[_fp("/lib/a.jpg"), _fp("/lib/b.jpg")],
+        )]
+        labels = {
+            os.path.normpath("/lib/a.jpg"): "<x>",
+            os.path.normpath("/lib/b.jpg"): "ok",
+        }
+        html_text = render_html_report(groups, "/lib", source_labels=labels)
+        self.assertNotIn("src: <x>", html_text)
+        self.assertIn("src: &lt;x&gt;", html_text)
+
+    def test_singleton_card_shows_source_label(self):
+        fingerprints = [_fp("/lib/2014-06-15 10.00.00_1.jpg")]
+        labels = {os.path.normpath("/lib/2014-06-15 10.00.00_1.jpg"): "PhotosCopy"}
+        html_text = render_singletons_html_report(
+            fingerprints, "/lib", source_labels=labels,
+        )
+        self.assertIn("src: PhotosCopy", html_text)
+
+    def test_stats_report_includes_by_source_table(self):
+        fingerprints = [
+            _fp("/lib/2014-01-01 10.00.00_1.jpg", size=1000),
+            _fp("/lib/2014-01-02 10.00.00_1.jpg", size=2000),
+            _fp("/lib/2014-01-03 10.00.00_1.jpg", size=3000),
+        ]
+        labels = {
+            os.path.normpath("/lib/2014-01-01 10.00.00_1.jpg"): "master",
+            os.path.normpath("/lib/2014-01-02 10.00.00_1.jpg"): "master",
+            os.path.normpath("/lib/2014-01-03 10.00.00_1.jpg"): "takeout",
+        }
+        html_text = render_stats_html_report(
+            fingerprints, [], "/lib", source_labels=labels,
+        )
+        self.assertIn("By source library", html_text)
+        self.assertIn(">master<", html_text)
+        self.assertIn(">takeout<", html_text)
+
+    def test_stats_report_without_source_labels_skips_by_source_table(self):
+        fingerprints = [_fp("/lib/2014-01-01 10.00.00_1.jpg")]
+        html_text = render_stats_html_report(fingerprints, [], "/lib")
+        self.assertNotIn("By source library", html_text)
+
+
+class TestRenderStatsHtmlReport(unittest.TestCase):
+    def test_empty_library_renders_zero_totals(self):
+        html_text = render_stats_html_report([], [], "/lib")
+        self.assertIn("<html>", html_text)
+        self.assertIn("<b>0</b> files", html_text)
+        self.assertIn("0 duplicate groups", html_text)
+
+    def test_year_extension_and_kind_totals(self):
+        # Two 2014 images of 1KB + 2KB, one 2015 video of 1MB. Stats should
+        # surface counts and sizes per bucket plus the right grand totals.
+        fingerprints = [
+            _fp("/lib/2014-06-15 10.00.00_1.jpg", size=1024),
+            _fp("/lib/2014-06-15 10.00.00_2.jpg", size=2048),
+            _fp("/lib/2015-08-20 14.30.00_1.mp4", size=1024 * 1024,
+                media_kind="video"),
+        ]
+        html_text = render_stats_html_report(fingerprints, [], "/lib")
+        # Header summary
+        self.assertIn("<b>3</b> files", html_text)
+        # By-year rows: 2014 (2 files), 2015 (1 file)
+        self.assertIn(">2014<", html_text)
+        self.assertIn(">2015<", html_text)
+        # By-extension rows: jpg and mp4 both present
+        self.assertIn(">jpg<", html_text)
+        self.assertIn(">mp4<", html_text)
+        # Media-kind rows
+        self.assertIn(">image<", html_text)
+        self.assertIn(">video<", html_text)
+
+    def test_duplicate_loser_bytes_reclaimable(self):
+        # Group of three: winner is 5MB (highest pixel count), losers 1MB + 1MB.
+        # Reclaimable bytes should be sum of losers = 2 MB.
+        group = DuplicateGroup(
+            tier=2,
+            fingerprints=[
+                _fp("/lib/2014-06-15 10.00.00_1.jpg",
+                    size=5 * 1024 * 1024, width=4000, height=3000),
+                _fp("/lib/2014-06-15 10.00.00_2.jpg",
+                    size=1 * 1024 * 1024, width=800, height=600),
+                _fp("/lib/2014-06-15 10.00.00_3.jpg",
+                    size=1 * 1024 * 1024, width=800, height=600),
+            ],
+        )
+        html_text = render_stats_html_report(group.fingerprints, [group], "/lib")
+        self.assertIn("reclaim up to", html_text)
+        self.assertIn("2.0 MB", html_text)
+        # Tier 2 row: 1 group, 3 files
+        self.assertIn("Tier 2", html_text)
+
+    def test_path_is_escaped(self):
+        # The library root may contain HTML-special characters; they must not
+        # leak into the rendered markup.
+        fingerprints = [_fp("/lib<x>/2014-06-15 10.00.00_1.jpg")]
+        html_text = render_stats_html_report(fingerprints, [], "/lib<x>")
+        self.assertNotIn("<x>", html_text.split("</style>", 1)[1])
+        self.assertIn("&lt;x&gt;", html_text)
 
 
 if __name__ == "__main__":

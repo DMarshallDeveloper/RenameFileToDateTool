@@ -409,6 +409,175 @@ class TestPlanMarkCrossDate(unittest.TestCase):
             self.assertNotIn("__from_", os.path.basename(new_path))
 
 
+class TestPlanMarkSourceLabels(unittest.TestCase):
+    """When ``source_label_lookup`` is provided, plan_mark stamps
+    ``__src_<label>`` onto every marked file so provenance survives the
+    rename. Absent paths from the lookup get no marker.
+    """
+
+    def _bare_fingerprint(self, path: str, size: int, width: int = 100,
+                          height: int = 100) -> duplicate_finder.FileFingerprint:
+        return duplicate_finder.FileFingerprint(
+            path=path, size=size, mtime=0.0,
+            media_kind="image",
+            file_sha256="x", pixel_sha256="y", phash_hex="z",
+            frame_phashes_hex=None,
+            width=width, height=height,
+        )
+
+    def test_same_base_group_stamps_src_marker(self):
+        group = duplicate_finder.DuplicateGroup(
+            tier=1,
+            fingerprints=[
+                self._bare_fingerprint("/lib/2014/2014-01-01 13.00.00_1.jpg",
+                                       100_000, width=200, height=200),
+                self._bare_fingerprint("/lib/2014/2014-01-01 13.00.00_2.jpg",
+                                       50_000),
+            ],
+        )
+        labels = {
+            os.path.normpath("/lib/2014/2014-01-01 13.00.00_1.jpg"): "master",
+            os.path.normpath("/lib/2014/2014-01-01 13.00.00_2.jpg"): "takeout",
+        }
+        plan = duplicate_finder.plan_mark([group], source_label_lookup=labels)
+        plan_by_old = {os.path.basename(o): os.path.basename(n) for o, n, _ in plan}
+        self.assertEqual(
+            plan_by_old["2014-01-01 13.00.00_1.jpg"],
+            "2014-01-01 13.00.00_1_a__src_master.jpg",
+        )
+        self.assertEqual(
+            plan_by_old["2014-01-01 13.00.00_2.jpg"],
+            "2014-01-01 13.00.00_1_b__src_takeout.jpg",
+        )
+
+    def test_cross_date_loser_gets_both_src_and_from_markers(self):
+        group = duplicate_finder.DuplicateGroup(
+            tier=2,
+            fingerprints=[
+                self._bare_fingerprint("/lib/2014/2014-06-15 10.00.00_1.jpg",
+                                       100_000, width=200, height=200),
+                self._bare_fingerprint("/lib/2015/2015-08-20 14.30.00_3.jpg",
+                                       50_000),
+            ],
+        )
+        labels = {
+            os.path.normpath("/lib/2014/2014-06-15 10.00.00_1.jpg"): "master",
+            os.path.normpath("/lib/2015/2015-08-20 14.30.00_3.jpg"): "PhotosCopy",
+        }
+        plan = duplicate_finder.plan_mark([group], source_label_lookup=labels)
+        new_names = [os.path.basename(n) for _, n, _ in plan]
+        self.assertIn(
+            "2014-06-15 10.00.00_1_a__src_master.jpg",
+            new_names,
+        )
+        # Loser: both src and from markers, src first.
+        self.assertIn(
+            "2014-06-15 10.00.00_1_b__src_PhotosCopy__from_2015-08-20 14.30.00.jpg",
+            new_names,
+        )
+
+    def test_marked_regex_parses_src_and_from_together(self):
+        # The MARKED_FILENAME_RE must round-trip the combined form so that
+        # plan_finalize can read back files that mark wrote.
+        match = duplicate_finder.MARKED_FILENAME_RE.match(
+            "2014-06-15 10.00.00_1_b__src_master__from_2015-08-20 14.30.00.jpg"
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group("src"), "master")
+        self.assertEqual(match.group("origin_base"), "2015-08-20 14.30.00")
+
+    def test_marked_regex_parses_src_alone(self):
+        match = duplicate_finder.MARKED_FILENAME_RE.match(
+            "2014-01-01 13.00.00_1_a__src_PhotosCopy.jpg"
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group("src"), "PhotosCopy")
+        self.assertIsNone(match.group("origin_base"))
+
+    def test_path_not_in_lookup_has_no_src_marker(self):
+        group = duplicate_finder.DuplicateGroup(
+            tier=1,
+            fingerprints=[
+                self._bare_fingerprint("/lib/2014/2014-01-01 13.00.00_1.jpg",
+                                       100_000, width=200, height=200),
+                self._bare_fingerprint("/lib/2014/2014-01-01 13.00.00_2.jpg",
+                                       50_000),
+            ],
+        )
+        # Only the first file has a label entry.
+        labels = {
+            os.path.normpath("/lib/2014/2014-01-01 13.00.00_1.jpg"): "master",
+        }
+        plan = duplicate_finder.plan_mark([group], source_label_lookup=labels)
+        plan_by_old = {os.path.basename(o): os.path.basename(n) for o, n, _ in plan}
+        self.assertIn(
+            "__src_master",
+            plan_by_old["2014-01-01 13.00.00_1.jpg"],
+        )
+        # The unlabelled file gets the marker-free form.
+        self.assertEqual(
+            plan_by_old["2014-01-01 13.00.00_2.jpg"],
+            "2014-01-01 13.00.00_1_b.jpg",
+        )
+
+    def test_empty_lookup_falls_back_to_marker_free_form(self):
+        # No labels at all: behaviour matches pre-source-label baseline.
+        group = duplicate_finder.DuplicateGroup(
+            tier=1,
+            fingerprints=[
+                self._bare_fingerprint("/lib/2014/2014-01-01 13.00.00_1.jpg",
+                                       100_000, width=200, height=200),
+                self._bare_fingerprint("/lib/2014/2014-01-01 13.00.00_2.jpg",
+                                       50_000),
+            ],
+        )
+        plan = duplicate_finder.plan_mark([group], source_label_lookup={})
+        for _, new_path, _ in plan:
+            self.assertNotIn("__src_", os.path.basename(new_path))
+
+
+class TestPlanFinalizeStripsSrcMarker(unittest.TestCase):
+    """``plan_finalize`` must drop ``__src_<label>`` along with the
+    ``_<letter>`` suffix, returning files to clean canonical form. The
+    src marker exists only during the review window.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='test_finalize_src_')
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _touch(self, name: str) -> str:
+        path = os.path.join(self.tmpdir, name)
+        with open(path, "wb") as fh:
+            fh.write(name.encode())
+        return path
+
+    def test_lone_a_survivor_with_src_marker_becomes_canonical(self):
+        self._touch("2026-04-12 09.15.30_1_a__src_master.jpg")
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(
+            os.path.basename(plan[0][1]),
+            "2026-04-12 09.15.30_1.jpg",
+        )
+
+    def test_src_marker_dropped_alongside_letter_and_from(self):
+        # _b carrying both src + from: returning to 2015 bucket in a flat
+        # layout (no year folders here) — finalize should produce a clean
+        # canonical name with neither marker.
+        self._touch("2014-06-15 10.00.00_1_b__src_takeout__from_2015-08-20 14.30.00.jpg")
+        plan = duplicate_finder.plan_finalize(self.tmpdir)
+        self.assertEqual(len(plan), 1)
+        new_basename = os.path.basename(plan[0][1])
+        self.assertNotIn("__src_", new_basename)
+        self.assertNotIn("__from_", new_basename)
+        self.assertTrue(new_basename.startswith("2015-08-20 14.30.00_"))
+
+
 class TestPlanFinalize(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix='test_finalize_')

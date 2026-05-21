@@ -53,19 +53,28 @@ BUNDLED_EARLY_YEARS = set(range(*BUNDLED_EARLY_YEAR_RANGE))
 
 logger = logging.getLogger("photo_lib")
 
-# Pattern for the marked form, two shapes accepted:
-#   plain:        <winner_base>_<idx>_<letter>.<ext>
-#   with origin:  <winner_base>_<idx>_<letter>__from_<loser_base>.<ext>
+# Pattern for the marked form, with two optional decorations:
+#   plain:                          <winner_base>_<idx>_<letter>.<ext>
+#   + source:                       <winner_base>_<idx>_<letter>__src_<label>.<ext>
+#   + origin (cross-date):          <winner_base>_<idx>_<letter>__from_<loser_base>.<ext>
+#   + source + origin:              <winner_base>_<idx>_<letter>__src_<label>__from_<loser_base>.<ext>
 #
-# The optional ``__from_<loser_base>`` carries the loser's original timestamp
-# when the duplicate group spanned different dates — without this marker the
-# loser's date would be erased by the rename (it inherits the winner's base).
-# Finalize uses ``origin_base`` to send a surviving cross-date loser back to
-# its original year folder instead of leaving it stranded in the winner's.
+# ``__src_<label>`` carries provenance: which source library this file came
+# from (master vs takeout vs USB). The label is sanitized to
+# ``[A-Za-z0-9-]+`` at combine time so the marker terminates unambiguously
+# before the next ``__`` delimiter or the extension dot.
+#
+# ``__from_<loser_base>`` carries the loser's original timestamp when the
+# duplicate group spanned different dates — without this marker the loser's
+# date would be erased by the rename. Finalize uses ``origin_base`` to send
+# a surviving cross-date loser back to its original year folder.
+#
+# Both markers drop off at finalize: they exist only during the review window.
 MARKED_FILENAME_RE = re.compile(
     r'^(?P<base>\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2})'
     r'_(?P<idx>\d+)'
     r'_(?P<letter>[a-z])'
+    r'(?:__src_(?P<src>[A-Za-z0-9-]+))?'
     r'(?:__from_(?P<origin_base>\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}))?'
     r'\.(?P<ext>[a-zA-Z0-9]{3,4})$'
 )
@@ -434,7 +443,10 @@ def _parse_canonical_parts(path: str) -> tuple[str, str, str] | None:
     return match.group("base"), match.group("idx"), match.group("ext")
 
 
-def plan_mark(groups: Iterable[DuplicateGroup]) -> list[tuple[str, str, int]]:
+def plan_mark(
+    groups: Iterable[DuplicateGroup],
+    source_label_lookup: dict[str, str] | None = None,
+) -> list[tuple[str, str, int]]:
     """Return ``[(old_path, new_path, tier), ...]`` for renaming files into _a/_b/_c form.
 
     All files in a duplicate group share the WINNER's ``<base>_<idx>`` prefix
@@ -448,19 +460,26 @@ def plan_mark(groups: Iterable[DuplicateGroup]) -> list[tuple[str, str, int]]:
     Each file keeps its own extension (so .heic, .mp4, .mov pairs at the same
     timestamp stay distinguishable within a group).
 
+    **Source labels** (optional): pass ``source_label_lookup`` mapping each
+    fingerprint's path to a sanitized source label (from the combine manifest).
+    Every marked file then carries ``__src_<label>`` so the user can see at a
+    glance which source library each duplicate came from. Paths missing from
+    the lookup don't get a marker — the function tolerates partial coverage.
+
     **Cross-date groups** (members with different timestamps): each loser
     carries a ``__from_<loser_base>`` marker so its original date stays
     visible in the filename and ``plan_finalize`` can send the file back home
-    if the user decides it wasn't really a duplicate:
+    if the user decides it wasn't really a duplicate.
 
-      winner:  2014-06-15 10.00.00_1.jpg                   -> 2014-06-15 10.00.00_1_a.jpg
-      loser:   2015-08-20 14.30.00_3.jpg (in 2015 folder)  -> 2014-06-15 10.00.00_1_b__from_2015-08-20 14.30.00.jpg
-                                                              (now in 2014 folder, alongside winner)
+    With both decorations present the form is::
+
+      <winner_base>_<idx>_<letter>__src_<label>__from_<loser_base>.<ext>
 
     If the WINNER's filename isn't canonical, the entire group is skipped —
     we have no canonical prefix to share. If a non-winner is non-canonical,
     only that file is dropped from the plan.
     """
+    lookup = source_label_lookup or {}
     plan: list[tuple[str, str, int]] = []
     for group in groups:
         ranked = group.ranked()
@@ -483,11 +502,15 @@ def plan_mark(groups: Iterable[DuplicateGroup]) -> list[tuple[str, str, int]]:
                                fingerprint.path)
                 continue
             loser_base, _loser_idx, file_ext = file_parts
+            src_label = lookup.get(os.path.normpath(fingerprint.path))
+            src_marker = f"__src_{src_label}" if src_label else ""
             if loser_base == winner_base:
-                new_name = f"{winner_base}_{winner_idx}_{letter}.{file_ext}"
+                new_name = (
+                    f"{winner_base}_{winner_idx}_{letter}{src_marker}.{file_ext}"
+                )
             else:
                 new_name = (
-                    f"{winner_base}_{winner_idx}_{letter}"
+                    f"{winner_base}_{winner_idx}_{letter}{src_marker}"
                     f"__from_{loser_base}.{file_ext}"
                 )
             new_path = os.path.join(winner_dir, new_name)

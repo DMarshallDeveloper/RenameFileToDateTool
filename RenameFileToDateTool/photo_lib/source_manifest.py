@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS source_labels (
 
 
 def _canonical_key(path: str) -> str:
-    return os.path.normpath(path)
+    # Always absolute. See _canonical_cache_key in duplicate_cache.py for the
+    # full rationale — same drive-relative-vs-absolute issue applies here.
+    return os.path.abspath(path)
 
 
 def default_manifest_path(library_root: str) -> str:

@@ -13,7 +13,9 @@
       "PowerShell(Get-ChildItem *)",
       "PowerShell(& \"D:\\\\Files\\\\Documents\\\\Code\\\\RenameFileToDateTool\\\\.venv\\\\Scripts\\\\python.exe\" -m unittest tests.test_photo_lib.test_duplicate_report -v 2>$null | Select-Object -Last 30)",
       "PowerShell(& \"D:\\\\Files\\\\Documents\\\\Code\\\\RenameFileToDateTool\\\\.venv\\\\Scripts\\\\python.exe\" -m unittest tests.test_photo_lib.test_duplicate_report -v)",
-      "PowerShell(& \"D:\\\\Files\\\\Documents\\\\Code\\\\RenameFileToDateTool\\\\.venv\\\\Scripts\\\\python.exe\" -m unittest discover -s tests -v 2>&1 | Select-Object -Last 5)"
+      "PowerShell(& \"D:\\\\Files\\\\Documents\\\\Code\\\\RenameFileToDateTool\\\\.venv\\\\Scripts\\\\python.exe\" -m unittest discover -s tests -v 2>&1 | Select-Object -Last 5)",
+      "Bash(python -m pytest tests/ -x --tb=short -q)",
+      "Bash(.venv/Scripts/python.exe -m unittest discover -s tests -p \"test_*.py\" -v)"
     ]
   }
 }

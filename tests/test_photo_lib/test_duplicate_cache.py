@@ -36,7 +36,7 @@ class TestFingerprintCache(unittest.TestCase):
             with FingerprintCache(db_path) as cache:
                 # Use normpath at construction so the test passes on both
                 # Windows (which converts / to \) and POSIX (no-op).
-                stored = _image_fp(os.path.normpath("/lib/a.jpg"))
+                stored = _image_fp(os.path.abspath("/lib/a.jpg"))
                 cache.store(stored)
                 got = cache.lookup("/lib/a.jpg", stored.size, stored.mtime)
             self.assertEqual(got, stored)
@@ -80,7 +80,7 @@ class TestFingerprintCache(unittest.TestCase):
             # Paths come back in canonical form (separators normalised), so
             # construct the expected set the same way.
             paths = {fp.path for fp in all_fingerprints}
-            expected = {os.path.normpath(p) for p in (
+            expected = {os.path.abspath(p) for p in (
                 "/lib/a.jpg", "/lib/b.jpg", "/lib/clip.mov",
             )}
             self.assertEqual(paths, expected)
@@ -119,11 +119,11 @@ class TestFingerprintCache(unittest.TestCase):
         # Path-normalisation at the cache boundary: storing with one
         # separator form must still be findable via the other.
         # `os.path.join` here mimics what real callers produce — on Windows
-        # both forms end up canonicalised by `os.path.normpath`.
+        # both forms end up canonicalised by `os.path.abspath`.
         with tempfile.TemporaryDirectory() as folder:
             db_path = os.path.join(folder, "cache.db")
             with FingerprintCache(db_path) as cache:
-                stored_path = os.path.normpath("/lib/sub/a.jpg")
+                stored_path = os.path.abspath("/lib/sub/a.jpg")
                 stored = _image_fp(stored_path)
                 cache.store(stored)
                 # Look up using a path with a redundant "." segment — must
@@ -140,7 +140,7 @@ class TestFingerprintCache(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             db_path = os.path.join(folder, "cache.db")
             with FingerprintCache(db_path) as cache:
-                canonical = os.path.normpath("/lib/sub/a.jpg")
+                canonical = os.path.abspath("/lib/sub/a.jpg")
                 cache.store(_image_fp(canonical, size=1000))
                 cache.store(_image_fp("/lib/./sub/a.jpg", size=2000))
                 all_fingerprints = cache.all_fingerprints()
@@ -154,10 +154,43 @@ class TestFingerprintCache(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             db_path = os.path.join(folder, "cache.db")
             with FingerprintCache(db_path) as cache:
-                stored = _image_fp(os.path.normpath("/lib/sub/a.jpg"))
+                stored = _image_fp(os.path.abspath("/lib/sub/a.jpg"))
                 cache.store(stored)
                 moved = cache.rename("/lib/./sub/a.jpg", "/lib/sub/a_a.jpg")
                 self.assertTrue(moved)
+
+    def test_relative_and_absolute_form_collapse_to_same_row(self):
+        # Regression: a path passed relative (or drive-relative on Windows
+        # — e.g. ``F:foo`` instead of ``F:\foo`` when bash silently ate the
+        # backslash) must hit the same cache row as its absolute form, or a
+        # follow-up scan misses every existing hash and starts from scratch.
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = os.path.join(folder, "cache.db")
+            with FingerprintCache(db_path) as cache:
+                # Store with a CWD-relative path...
+                cache.store(_image_fp("rel/sub/a.jpg", size=1234))
+                # ...lookup with the abspath form. Must match.
+                got = cache.lookup(
+                    os.path.abspath("rel/sub/a.jpg"), 1234, 1700000000.0,
+                )
+                self.assertIsNotNone(got)
+                # And only one row was written.
+                self.assertEqual(len(cache.all_fingerprints()), 1)
+
+    def test_canonical_key_is_absolute(self):
+        # Invariant: every key the cache stores is os.path.isabs.
+        # Catches the broader class of "input form mangles the cache key".
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = os.path.join(folder, "cache.db")
+            with FingerprintCache(db_path) as cache:
+                cache.store(_image_fp("rel/a.jpg"))
+                cache.store(_image_fp("./b.jpg"))
+                cache.store(_image_fp(os.path.join(folder, "c.jpg")))
+                for fp in cache.all_fingerprints():
+                    self.assertTrue(
+                        os.path.isabs(fp.path),
+                        f"non-absolute cache key: {fp.path!r}",
+                    )
 
 
 if __name__ == "__main__":

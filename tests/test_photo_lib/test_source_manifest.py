@@ -173,6 +173,15 @@ class TestSourceManifest(unittest.TestCase):
             self.assertIn("X", entries.values())
             self.assertIn("Y", entries.values())
 
+    def test_relative_and_absolute_form_collapse_to_same_row(self):
+        # Mirrors the duplicate_cache regression: drive-relative (or any
+        # CWD-relative) form must hit the same row as its absolute form.
+        with SourceManifest(self.db_path) as manifest:
+            manifest.set("rel/sub/a.jpg", "src1")
+            got = manifest.lookup(os.path.abspath("rel/sub/a.jpg"))
+            self.assertEqual(got, "src1")
+            self.assertEqual(len(manifest.all_entries()), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

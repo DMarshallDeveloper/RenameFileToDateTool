@@ -37,6 +37,13 @@ def resolve_directory(cli_path: str | None, title: str,
     the directory if absent (e.g. convert_unwanted_formats's --output).
     """
     if cli_path:
+        # Resolve to absolute up front so downstream callers (and any sidecar
+        # databases they keep) get a stable, separator-normalised key. This
+        # closes a class of bug where a shell silently mangled the input —
+        # e.g. bash-on-Windows dropping ``\P`` in ``F:\PhotosCombined`` so
+        # Python received ``F:PhotosCombined`` (drive-relative). Without
+        # abspath here, every cache lookup against that root missed.
+        cli_path = os.path.abspath(cli_path)
         if must_exist and not os.path.isdir(cli_path):
             raise SystemExit(f"Not a directory: {cli_path}")
         return cli_path

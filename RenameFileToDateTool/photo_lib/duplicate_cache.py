@@ -22,22 +22,30 @@ DEFAULT_CACHE_FILENAME = ".photo_hashes.db"
 
 
 def _canonical_cache_key(path: str) -> str:
-    """Cache-key form of ``path`` — separators collapsed to the OS default.
+    """Cache-key form of ``path`` — always an absolute, separator-normalised path.
 
-    Windows treats ``F:/foo`` and ``F:\\foo`` as the same file on NTFS, but
-    SQLite treats them as distinct primary keys. If the same library gets
-    scanned twice with different root-path forms (e.g. once with a
-    forward-slash CLI arg, once with a backslash one), each file accumulates
-    two cache rows and the duplicate planner reports every file as a
-    self-duplicate. Normalising at the cache boundary keeps the key stable
-    regardless of how the caller spelled the path.
+    Two distinct path-form bugs have to be defused at this boundary:
+
+    * Forward vs backward slashes on Windows. ``F:/foo`` and ``F:\\foo`` refer
+      to the same file on NTFS, but SQLite would treat them as distinct PKs.
+    * Drive-relative vs absolute on Windows. ``F:PhotosCombined`` (drive-
+      relative — resolved against the CWD on F:) and ``F:\\PhotosCombined``
+      (absolute) refer to the same file, but plain ``normpath`` doesn't merge
+      them. This actually happened in practice when bash-on-Windows silently
+      ate the ``\\`` in a ``--path F:\\PhotosCombined`` argument; Python
+      received ``F:PhotosCombined`` and a 20k-row scan looked entirely orphan
+      to a follow-up run that used the absolute form.
+
+    ``abspath`` handles both: it collapses redundant separators AND resolves
+    drive-relative / relative paths against the CWD. A path that's already
+    absolute is unchanged.
 
     Case is intentionally NOT normalised — the on-disk case is preserved so
     e.g. ``2014-06-15 10.00.00_1.HEIC`` stays distinct from a separately-cased
     sibling if the user has rare mixed-case files. (NTFS case-insensitivity
     is handled elsewhere in the codebase.)
     """
-    return os.path.normpath(path)
+    return os.path.abspath(path)
 
 
 SCHEMA_SQL = """

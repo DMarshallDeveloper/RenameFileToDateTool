@@ -43,6 +43,16 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from PIL import Image
+from pillow_heif import register_heif_opener
+
+# Teach PIL to decode HEIC/HEIF. Without this, every iPhone photo (~4% of the
+# library at the time of writing) gets only a file_sha256 — no pixel_sha256
+# and no phash — so the Tier-2 / Tier-3 dedup tiers can't see them. Two
+# pixel-identical HEICs with slightly different EXIF would slip through as
+# "not duplicates" purely because PIL couldn't read either side. The opener
+# registers itself globally with PIL, so this single call at import time
+# covers every later `Image.open(...)` in the codebase.
+register_heif_opener()
 
 from photo_lib.binaries import FFMPEG, FFPROBE
 from photo_lib.config import BUNDLED_EARLY_FOLDER, BUNDLED_EARLY_YEAR_RANGE

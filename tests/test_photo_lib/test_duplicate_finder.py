@@ -101,6 +101,28 @@ class TestHashing(unittest.TestCase):
                 fh.write("hello")
             self.assertIsNone(duplicate_finder.fingerprint_file(text_path))
 
+    def test_heic_yields_pixel_and_phash(self):
+        # Regression: without pillow-heif's register_heif_opener() at import
+        # time in photo_lib.duplicate_finder, PIL refuses HEIC files and
+        # hash_image_pixels / compute_phash_hex both return None. That left
+        # every iPhone photo invisible to Tier 2 (pixel) and Tier 3 (pHash)
+        # deduping, so two pixel-identical HEICs differing only in EXIF
+        # would be missed entirely.
+        with tempfile.TemporaryDirectory() as folder:
+            heic_path = os.path.join(folder, "shot.heic")
+            Image.new("RGB", (64, 64), color=(200, 50, 50)).save(
+                heic_path, format="HEIF",
+            )
+            fingerprint = duplicate_finder.fingerprint_file(heic_path)
+            self.assertIsNotNone(fingerprint)
+            self.assertEqual(fingerprint.media_kind, "image")
+            self.assertIsNotNone(fingerprint.pixel_sha256,
+                                 "HEIC pixel hash missing — pillow-heif opener not registered?")
+            self.assertIsNotNone(fingerprint.phash_hex,
+                                 "HEIC pHash missing — pillow-heif opener not registered?")
+            self.assertEqual(fingerprint.width, 64)
+            self.assertEqual(fingerprint.height, 64)
+
 
 class TestGroupDuplicates(unittest.TestCase):
     def test_tier1_byte_identical_pair_grouped(self):

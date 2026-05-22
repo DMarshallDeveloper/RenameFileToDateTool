@@ -7,6 +7,10 @@ tzdata
 # imagehash: perceptual hashing for find_duplicate_photos.py. pHash/wHash etc.
 # survive re-encoding and resizing where exact pixel hashing wouldn't.
 imagehash>=4.3,<5
+# pillow-heif: lets PIL decode HEIC/HEIF. iPhone photos make up ~4% of the
+# library; without this they only get a file_sha256 (Tier 1) and the Tier-2
+# pixel + Tier-3 pHash dedup tiers can't see them.
+pillow-heif>=0.18
 # hypothesis: property-based testing for the multi-script dedup pipeline.
 # Generates randomised LibrarySpec values and asserts invariants (no data
 # loss, canonical naming, year-folder placement, idempotence).

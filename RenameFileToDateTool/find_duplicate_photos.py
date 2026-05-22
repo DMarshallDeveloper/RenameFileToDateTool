@@ -68,11 +68,34 @@ def iter_media_paths(root: str):
                 yield os.path.join(current_dir, name)
 
 
+def _count_orphan_rows(cache, walked_paths: list[str]) -> int:
+    """How many cache rows point at a path that wasn't walked this scan.
+
+    A nonzero orphan count is *usually* benign — rows left behind by an
+    earlier mark/finalize rename that no longer matches anything on disk.
+    But a *jump* in orphans across one scan run is the smoking gun for a
+    path-canonicalization bug (the kind where bash silently eats ``\\P`` and
+    the scan re-hashes everything under a different key form): see the
+    abspath fix in ``photo_lib.duplicate_cache`` for the full story.
+    """
+    walked_keys = {os.path.abspath(p) for p in walked_paths}
+    return sum(1 for fp in cache.all_fingerprints()
+               if os.path.abspath(fp.path) not in walked_keys)
+
+
 def scan(root: str, cache_path: str | None = None) -> int:
     cache_path = cache_path or default_cache_path(root)
     paths = list(iter_media_paths(root))
     logger.info("Scanning %d media files under %s (cache: %s)",
                 len(paths), root, cache_path)
+    with FingerprintCache(cache_path) as cache:
+        existing_cache_rows = len(cache.all_fingerprints())
+        orphans_at_start = _count_orphan_rows(cache, paths)
+    logger.info("Cache contains %d existing rows from prior runs "
+                "(reused where path + size + mtime still match); "
+                "%d of those are orphans (path no longer on disk - "
+                "typically left over from mark/finalize renames)",
+                existing_cache_rows, orphans_at_start)
     hashed_count = 0
     cache_hits = 0
     with FingerprintCache(cache_path) as cache:
@@ -88,8 +111,30 @@ def scan(root: str, cache_path: str | None = None) -> int:
             cache.store(fingerprint)
             hashed_count += 1
             if hashed_count % 100 == 0:
-                logger.info("  hashed %d new files", hashed_count)
+                # Include cache_hits in every tick so a user watching the
+                # log can tell at a glance whether resume is working —
+                # otherwise "hashed 200" leaves you wondering if it's 200
+                # of 12k or 200 of 32k.
+                logger.info("  hashed %d new files (cache hits so far: %d)",
+                            hashed_count, cache_hits)
+        orphans_at_end = _count_orphan_rows(cache, paths)
     logger.info("Scan done: %d hashed, %d cache hits", hashed_count, cache_hits)
+    # Hard guard: a *jump* in orphans means rows were added under a different
+    # path-canonical form than the on-disk files use — that's a
+    # canonicalization bug, not normal cache decay. Shout loudly so the
+    # user sees it instead of a quietly-bloated cache.
+    new_orphans = orphans_at_end - orphans_at_start
+    if new_orphans > 0:
+        logger.warning(
+            "  *** WARNING: %d new orphan cache rows created this scan. "
+            "Expected 0 — this typically means the cache stored rows under "
+            "a different path-canonical form than what os.walk produced. "
+            "Inspect cache rows whose path doesn't match a walked file.",
+            new_orphans,
+        )
+    elif orphans_at_end > 0:
+        logger.info("  Orphan count unchanged at %d (no new orphans created).",
+                    orphans_at_end)
     return hashed_count
 
 

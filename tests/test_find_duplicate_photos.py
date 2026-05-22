@@ -139,6 +139,37 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(first, 1)
         self.assertEqual(second, 0)  # cache hit, no new rows
 
+    def test_scan_warns_when_canonicalization_creates_orphans(self):
+        # Hard guard against a canonicalization regression. We simulate the
+        # broken-canonicalization scenario by patching the cache's key
+        # function to return a mangled form during the scan. Result: rows
+        # land in the cache under a key the orphan-detector can't match
+        # back to a walked file — exactly the failure mode that
+        # bash-eats-the-backslash produced. The warning MUST fire.
+        from photo_lib import duplicate_cache
+        from unittest.mock import patch
+
+        _write_solid_jpg(
+            self.year_dir, "2026-04-12 09.15.30_1.jpg",
+            color=(200, 50, 50),
+        )
+
+        def _broken_key(p):
+            # Append a sentinel so every cache row lands at a path that
+            # _count_orphan_rows can't canonicalize back to a walked path.
+            return p + "__BROKEN__"
+
+        with patch.object(duplicate_cache, '_canonical_cache_key', _broken_key):
+            with self.assertLogs('photo_lib', level='INFO') as captured:
+                find_duplicate_photos.scan(self.tmpdir)
+        log_text = "\n".join(captured.output)
+        self.assertIn("new orphan cache rows created this scan", log_text)
+        # The warning is logged at WARNING level — captured.records lets us
+        # check the level cleanly rather than grepping for the text.
+        warning_records = [r for r in captured.records if r.levelname == 'WARNING']
+        self.assertTrue(warning_records,
+                        f"expected a WARNING log; got only: {log_text}")
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -15,7 +15,10 @@
       "PowerShell(& \"D:\\\\Files\\\\Documents\\\\Code\\\\RenameFileToDateTool\\\\.venv\\\\Scripts\\\\python.exe\" -m unittest tests.test_photo_lib.test_duplicate_report -v)",
       "PowerShell(& \"D:\\\\Files\\\\Documents\\\\Code\\\\RenameFileToDateTool\\\\.venv\\\\Scripts\\\\python.exe\" -m unittest discover -s tests -v 2>&1 | Select-Object -Last 5)",
       "Bash(python -m pytest tests/ -x --tb=short -q)",
-      "Bash(.venv/Scripts/python.exe -m unittest discover -s tests -p \"test_*.py\" -v)"
+      "Bash(.venv/Scripts/python.exe -m unittest discover -s tests -p \"test_*.py\" -v)",
+      "Bash(.venv/Scripts/python.exe -m unittest tests.test_find_duplicate_photos -v)",
+      "Bash(.venv/Scripts/python.exe -m unittest tests.test_find_duplicate_photos.TestEndToEnd.test_scan_warns_when_canonicalization_creates_orphans -v)",
+      "Bash(.venv/Scripts/python.exe -m unittest discover -s tests -p \"test_*.py\")"
     ]
   }
 }

@@ -154,6 +154,35 @@ def _render_card(
     )
 
 
+def _group_sort_key(group: DuplicateGroup) -> tuple:
+    """Sort key that mirrors Explorer's name-sort order.
+
+    The winner (highest-quality member) determines the group's position.
+    We sort by its canonical ``<base>_<idx>`` prefix, falling back to
+    its full filename if non-canonical. Pad the idx so ``_2`` sorts
+    before ``_10`` (lexicographic on raw ``_2``/``_10`` would put
+    ``_10`` first). Non-canonical winners sort to the end.
+    """
+    try:
+        winner = group.ranked()[0]
+    except IndexError:
+        return (1, "")
+    basename = os.path.basename(winner.path)
+    # The path's parent folder also matters — Explorer shows files
+    # grouped by folder, and within a folder by name. Sort by folder
+    # first, then by canonical base+idx within it.
+    folder = os.path.dirname(winner.path)
+    match = CANONICAL_FILENAME_PARTS_RE.match(basename)
+    if match is None:
+        return (folder, 1, basename)
+    base = match.group("base")
+    try:
+        idx = int(match.group("idx"))
+    except (TypeError, ValueError):
+        idx = 0
+    return (folder, 0, base, idx)
+
+
 def _is_cross_date_group(group: DuplicateGroup) -> bool:
     """A group spans different timestamps when its canonical members don't all
     share the same ``<base>``. Non-canonical members are ignored (they don't
@@ -537,7 +566,14 @@ def render_html_report(
         f'  Tier 3: {len(groups_by_tier[3])}.'
         f'</div>'
     )
-    sorted_groups = sorted(materialized, key=lambda g: (g.tier, -len(g.fingerprints)))
+    # Sort groups by the winner's canonical base (timestamp) so the report
+    # scrolls in the same order Explorer shows the folder when sorted by
+    # name. Operators run manual review by name-sorting a year folder in
+    # Explorer and stepping through; having the report match that order
+    # lets them follow along visually. Non-canonical winners sort to the
+    # end. Tier is shown as a badge on every group, so the previous
+    # tier-then-size sort isn't load-bearing.
+    sorted_groups = sorted(materialized, key=_group_sort_key)
     for group in sorted_groups:
         parts.append(_render_group(
             group, library_root,

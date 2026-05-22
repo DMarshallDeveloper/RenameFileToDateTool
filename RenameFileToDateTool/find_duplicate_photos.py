@@ -231,17 +231,23 @@ def mark(root: str, dry_run: bool, cache_path: str | None = None,
         # Update cache: rename the path key so a subsequent ``report`` can
         # read the same hash data under the new filename without a re-scan.
         cache_path = cache_path or default_cache_path(root)
+        logger.info("Updating cache path keys (%d rows)...", len(plan))
         with FingerprintCache(cache_path) as cache:
-            for old_path, new_path, _ in plan:
+            for index, (old_path, new_path, _) in enumerate(plan, start=1):
                 cache.rename(old_path, new_path)
+                if index % 5000 == 0:
+                    logger.info("  cache rename: %d / %d", index, len(plan))
         # Keep the source manifest in sync too, so subsequent report/finalize
         # passes can still resolve labels for the renamed files. rename_many
         # is the staged variant — handles plans where one entry's new path
         # collides with another entry's old path.
         manifest_path = default_manifest_path(root)
         if os.path.exists(manifest_path):
+            logger.info("Updating source manifest (%d rows, staged)...", len(plan))
             with SourceManifest(manifest_path) as manifest:
                 manifest.rename_many([(o, n) for o, n, _ in plan])
+        logger.info("Mark complete: %d renames applied + cache + manifest in sync",
+                    len(plan))
     return len(plan)
 
 

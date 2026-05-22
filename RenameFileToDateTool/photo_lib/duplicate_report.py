@@ -54,6 +54,43 @@ def _thumbnail_data_uri(path: str, max_px: int = THUMBNAIL_MAX_PX) -> str | None
         return None
 
 
+def precompute_thumbnails(
+    paths: list[str],
+    max_workers: int = 8,
+    log_every: int = 1000,
+) -> dict[str, str | None]:
+    """Generate thumbnail data URIs for ``paths`` in parallel.
+
+    On an external HDD the sequential thumbnail loop was the report's
+    bottleneck — ~150-300ms per file × 30k = 1.5 hours wall-clock with
+    no progress visibility. PIL's image decode releases the GIL, so a
+    small thread pool cuts wall-clock by 5-8× and we can emit ticks so
+    the operator knows roughly where it is.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    total = len(paths)
+    if total == 0:
+        return {}
+    logger.info("Generating %d thumbnails (%d workers in parallel)...",
+                total, max_workers)
+    out: dict[str, str | None] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_path = {
+            executor.submit(_thumbnail_data_uri, p): p for p in paths
+        }
+        for index, future in enumerate(as_completed(future_to_path), start=1):
+            path = future_to_path[future]
+            try:
+                out[path] = future.result()
+            except Exception as exc:
+                logger.debug("Thumbnail failed for %s: %s", path, exc)
+                out[path] = None
+            if index % log_every == 0:
+                logger.info("  thumbnails: %d / %d", index, total)
+    logger.info("  thumbnails: %d / %d (done)", total, total)
+    return out
+
+
 def _format_size(byte_count: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if byte_count < 1024:
@@ -76,8 +113,16 @@ def _render_card(
     position: int,
     library_root: str,
     source_labels: dict[str, str] | None = None,
+    thumbnails: dict[str, str | None] | None = None,
 ) -> str:
-    thumbnail = _thumbnail_data_uri(fingerprint.path)
+    # Prefer the precomputed thumbnail cache if the caller went through
+    # precompute_thumbnails(). Falls back to lazy single-threaded
+    # generation otherwise (preserves the previous behavior for callers
+    # that haven't been updated).
+    if thumbnails is not None and fingerprint.path in thumbnails:
+        thumbnail = thumbnails[fingerprint.path]
+    else:
+        thumbnail = _thumbnail_data_uri(fingerprint.path)
     thumb_html = (
         f'<img src="{thumbnail}" />'
         if thumbnail
@@ -127,10 +172,12 @@ def _render_group(
     group: DuplicateGroup,
     library_root: str,
     source_labels: dict[str, str] | None = None,
+    thumbnails: dict[str, str | None] | None = None,
 ) -> str:
     label, blurb, color = TIER_LABELS[group.tier]
     cards = "\n".join(
-        _render_card(fingerprint, position, library_root, source_labels=source_labels)
+        _render_card(fingerprint, position, library_root,
+                     source_labels=source_labels, thumbnails=thumbnails)
         for position, fingerprint in enumerate(group.ranked())
     )
     cross_date_badge = (
@@ -233,6 +280,7 @@ def render_singletons_html_report(
     singletons: Iterable[FileFingerprint],
     library_root: str,
     source_labels: dict[str, str] | None = None,
+    thumbnails: dict[str, str | None] | None = None,
 ) -> str:
     """Render an HTML report of files that weren't grouped as duplicates.
 
@@ -272,6 +320,7 @@ def render_singletons_html_report(
                 fingerprint, position=1,
                 library_root=library_root,
                 source_labels=source_labels,
+                thumbnails=thumbnails,
             )
             for fingerprint in items
         )
@@ -457,12 +506,18 @@ def render_html_report(
     groups: Iterable[DuplicateGroup],
     library_root: str,
     source_labels: dict[str, str] | None = None,
+    thumbnails: dict[str, str | None] | None = None,
 ) -> str:
     """Return a complete HTML document string for the given duplicate groups.
 
     ``source_labels`` (from ``SourceManifest.all_entries``) is optional —
     when present, each card carries a ``src: <label>`` badge showing the
     library the file came from.
+
+    ``thumbnails`` is an optional ``{path: data_uri}`` cache from
+    ``precompute_thumbnails``. When given, no synchronous thumbnail
+    generation happens here — useful for big libraries where the
+    parallel precompute is much faster than the sequential fallback.
     """
     materialized = list(groups)
     groups_by_tier = {1: [], 2: [], 3: []}
@@ -484,6 +539,9 @@ def render_html_report(
     )
     sorted_groups = sorted(materialized, key=lambda g: (g.tier, -len(g.fingerprints)))
     for group in sorted_groups:
-        parts.append(_render_group(group, library_root, source_labels=source_labels))
+        parts.append(_render_group(
+            group, library_root,
+            source_labels=source_labels, thumbnails=thumbnails,
+        ))
     parts.append("</body></html>")
     return "\n".join(parts)

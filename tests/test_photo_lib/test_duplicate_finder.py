@@ -179,9 +179,19 @@ class TestGroupDuplicates(unittest.TestCase):
             groups = duplicate_finder.group_duplicates(fingerprints)
             self.assertEqual(groups, [])
 
-    def test_tier1_priority_over_tier2(self):
-        """A file that's byte-identical to one neighbor and pixel-identical to
-        another should only appear in the tier-1 group, not also in tier 2."""
+    def test_tier1_and_tier2_edges_merge_into_one_group(self):
+        """Regression: union-find across tiers.
+
+        Three files where (a, a_copy) are byte-identical and (a, b) are
+        pixel-identical (different bytes) must end up in ONE group, not
+        two. The old "first-tier-claims-everything" logic emitted a
+        tier-1 group of {a, a_copy} and then silently dropped b because
+        its only sibling-by-pixel-hash (a) was already claimed.
+
+        Group tier = the STRONGEST signal that connected any pair (tier 1,
+        because a-a_copy is byte-identical even though a-b is only
+        pixel-identical).
+        """
         with tempfile.TemporaryDirectory() as folder:
             path_a = _write_solid_jpg_with_exif_diff(folder, "a.jpg", (200, 50, 50))
             import shutil
@@ -194,14 +204,11 @@ class TestGroupDuplicates(unittest.TestCase):
                 duplicate_finder.fingerprint_file(path_b),
             ]
             groups = duplicate_finder.group_duplicates(fingerprints)
-            # Either way we should see a tier-1 group of (a, a_copy). Whether b
-            # ends up in a tier-2 group with (a) depends on uniqueness; the
-            # invariant we test is that the tier-1 group exists and a/a_copy
-            # don't double-appear.
-            tier1_groups = [group for group in groups if group.tier == 1]
-            self.assertEqual(len(tier1_groups), 1)
-            tier1_paths = {fp.path for fp in tier1_groups[0].fingerprints}
-            self.assertEqual(tier1_paths, {path_a, path_a_copy})
+            self.assertEqual(len(groups), 1, "all three should merge into one group")
+            self.assertEqual(groups[0].tier, 1, "tier should be the strongest edge (a-a_copy)")
+            paths_in_group = {fp.path for fp in groups[0].fingerprints}
+            self.assertEqual(paths_in_group, {path_a, path_a_copy, path_b})
+
 
 
 class TestPlanMark(unittest.TestCase):
@@ -1017,10 +1024,13 @@ class TestFuzzyPhashGrouping(unittest.TestCase):
             ],
             phash_hamming_threshold=8,
         )
-        # Exact-equality tier 3 catches this pair regardless of low-entropy
-        # filter (exact match is unambiguous), so we expect 1 group of 2.
-        # The low-entropy filter only kicks in for FUZZY (distance > 0).
-        self.assertEqual(len(groups), 1)
+        # Low-entropy pHashes are excluded from EXACT matching too (not just
+        # fuzzy). Two synthetic fingerprints with all-zero pHashes have no
+        # other shared signal — distinct file_sha256, distinct pixel_sha256 —
+        # so without the pHash bucket they have nothing in common and
+        # correctly form no group. (Two genuinely-identical black thumbnails
+        # would also share file_sha256 or pixel_sha256 and would still group.)
+        self.assertEqual(groups, [])
 
     def test_low_entropy_phashes_excluded_when_distance_is_nonzero(self):
         # Two low-entropy pHashes 2 bits apart at threshold 8 — must NOT group.
@@ -1047,10 +1057,14 @@ class TestFuzzyPhashGrouping(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(len(groups[0].fingerprints), 3)
 
-    def test_exact_match_claims_files_before_fuzzy_pass(self):
-        # A and B share an exact pHash; C is fuzzy-distance 4 away.
-        # Exact-match pass groups A+B first; fuzzy pass only looks at
-        # unclaimed remainders, so C ends up alone.
+    def test_fuzzy_edge_merges_into_exact_match_component(self):
+        # A and B share an exact pHash; C is fuzzy-distance 4 from both.
+        # Under union-find, the fuzzy edge A-C (or B-C) unions C into
+        # the same component as A and B — all three become one tier-3
+        # group. This is the post-bugfix behavior; the pre-fix logic
+        # only ran fuzzy matching on "remainders" not already claimed by
+        # an exact-pHash group, which silently dropped C even though it
+        # was a legitimate fuzzy match.
         groups = duplicate_finder.group_duplicates(
             [
                 self._fp("/lib/a.jpg", "abcd1234abcd1234"),
@@ -1061,7 +1075,40 @@ class TestFuzzyPhashGrouping(unittest.TestCase):
         )
         self.assertEqual(len(groups), 1)
         paths = {fp.path for fp in groups[0].fingerprints}
-        self.assertEqual(paths, {"/lib/a.jpg", "/lib/b.jpg"})
+        self.assertEqual(paths, {"/lib/a.jpg", "/lib/b.jpg", "/lib/c.jpg"})
+        self.assertEqual(groups[0].tier, 3)
+
+    def test_fuzzy_phash_merges_two_byte_identical_pairs(self):
+        # Real-world bug reproducer: two pre-existing byte-identical pairs
+        # (master+takeout copies of the same photo, twice) whose pHashes
+        # are fuzzy-close. The pre-fix logic emitted two separate tier-1
+        # groups because fuzzy tier 3 only ran on "remainders" not yet
+        # claimed by Tier 1/2. With union-find across tiers, the fuzzy
+        # edge bridges the two pairs into a single component, labelled by
+        # the strongest signal that connected anything inside it (tier 1).
+        def _pair_fp(path, file_sha, phash_hex):
+            return duplicate_finder.FileFingerprint(
+                path=path, size=1000, mtime=0.0, media_kind="image",
+                file_sha256=file_sha,
+                pixel_sha256=f"pix_{path}",  # distinct per file
+                phash_hex=phash_hex, frame_phashes_hex=None,
+                width=100, height=100,
+            )
+        groups = duplicate_finder.group_duplicates(
+            [
+                _pair_fp("/lib/a1.jpg", "fileA", "abcd1234abcd1234"),
+                _pair_fp("/lib/a2.jpg", "fileA", "abcd1234abcd1234"),
+                _pair_fp("/lib/b1.jpg", "fileB", "abcd1234abcd123b"),
+                _pair_fp("/lib/b2.jpg", "fileB", "abcd1234abcd123b"),
+            ],
+            phash_hamming_threshold=5,
+        )
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].tier, 1, "tier-1 edge inside the component")
+        self.assertEqual(
+            {fp.path for fp in groups[0].fingerprints},
+            {"/lib/a1.jpg", "/lib/a2.jpg", "/lib/b1.jpg", "/lib/b2.jpg"},
+        )
 
 
 class TestVideoFingerprint(unittest.TestCase):

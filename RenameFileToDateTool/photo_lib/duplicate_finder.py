@@ -347,99 +347,156 @@ def group_duplicates(
 ) -> list[DuplicateGroup]:
     """Cluster fingerprints into duplicate groups using tiers 1-3.
 
-    A file is placed into the FIRST tier it joins a multi-member group in: a
-    pair of byte-identical files goes into tier 1 only, not tier 1 *and* tier 2.
-    This avoids reporting the same pair under multiple tiers.
+    Union-find across ALL tiers in one pass: each pair-match (whether by
+    file bytes, pixel bytes, frame pHash tuple, exact pHash, or fuzzy
+    pHash) unions the pair. After all signals are processed, each
+    connected component is emitted as one group, labelled with the
+    STRONGEST tier (lowest number) of any edge inside it.
 
-    ``phash_hamming_threshold`` controls tier 3 (image pHash) and the
-    video-frame tier 2 fuzzy match:
-      - 0 = exact equality only; fastest, strictest. Same as the original
-        behavior.
-      - > 0 = a pair counts as a match if Hamming distance ≤ threshold.
-        Catches takeout re-encoding (pHashes typically differ by 4-12 bits).
-        Solid-color / low-entropy pHashes are excluded from fuzzy matching to
-        prevent giant false clusters.
+    This fixes a long-standing bug where the previous "first-tier-claims-
+    everything" design orphaned cross-tier matches. Concrete case from
+    a real library:
+      A, B: byte-identical (tier 1)        A, B, C all share pixel_sha256
+      C:    pixel-identical to A and B     so should be one tier-1 group
+      old logic: emitted {A,B} as tier 1, then bailed in tier 2 because
+                 A and B were already "used" and C alone wasn't enough
+                 to form a group. C silently fell through unmarked.
+      new logic: tier-1 edges A-B and tier-2 edges A-C, B-C all union
+                 the three into a single component. Group's tier = 1.
+
+    ``phash_hamming_threshold`` controls fuzzy matching for tier 3
+    (image pHash) and tier 2 (video frame pHashes):
+      - 0 = exact equality only.
+      - > 0 = pair counts as a match if Hamming distance ≤ threshold.
+        Solid-color / low-entropy pHashes are excluded from fuzzy
+        matching to prevent giant false clusters.
     """
-    by_file_sha: dict[str, list[FileFingerprint]] = defaultdict(list)
-    by_pixel_sha: dict[str, list[FileFingerprint]] = defaultdict(list)
-    by_phash_exact: dict[str, list[FileFingerprint]] = defaultdict(list)
-    by_frame_phashes_exact: dict[tuple[str, ...], list[FileFingerprint]] = defaultdict(list)
-
     materialized = list(fingerprints)
-    for fingerprint in materialized:
-        by_file_sha[fingerprint.file_sha256].append(fingerprint)
-        if fingerprint.pixel_sha256 is not None:
-            by_pixel_sha[fingerprint.pixel_sha256].append(fingerprint)
-        if fingerprint.phash_hex is not None:
-            by_phash_exact[fingerprint.phash_hex].append(fingerprint)
-        if fingerprint.frame_phashes_hex is not None:
-            by_frame_phashes_exact[fingerprint.frame_phashes_hex].append(fingerprint)
+    n = len(materialized)
 
-    used_paths: set[str] = set()
-    groups: list[DuplicateGroup] = []
+    parent = list(range(n))
 
-    def _emit(tier: int, members: list[FileFingerprint]) -> None:
-        free_members = [m for m in members if m.path not in used_paths]
-        if len(free_members) < 2:
+    def find(node: int) -> int:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]  # path-halving
+            node = parent[node]
+        return node
+
+    # Track the strongest tier that contributed any edge inside each
+    # component. Keyed by current root; updated on every union event.
+    _UNTIED = 99
+    tier_at_root: dict[int, int] = {}
+
+    def union_at_tier(a: int, b: int, tier: int) -> None:
+        root_a, root_b = find(a), find(b)
+        if root_a == root_b:
+            # Already connected — lower the tier if this edge is stronger.
+            if tier < tier_at_root.get(root_a, _UNTIED):
+                tier_at_root[root_a] = tier
             return
-        for member in free_members:
-            used_paths.add(member.path)
-        groups.append(DuplicateGroup(tier=tier, fingerprints=free_members))
+        merged = min(
+            tier_at_root.get(root_a, _UNTIED),
+            tier_at_root.get(root_b, _UNTIED),
+            tier,
+        )
+        parent[root_b] = root_a
+        tier_at_root[root_a] = merged
+        tier_at_root.pop(root_b, None)
+
+    by_file_sha: dict[str, list[int]] = defaultdict(list)
+    by_pixel_sha: dict[str, list[int]] = defaultdict(list)
+    by_phash_exact: dict[str, list[int]] = defaultdict(list)
+    by_frame_phashes_exact: dict[tuple[str, ...], list[int]] = defaultdict(list)
+
+    for index, fingerprint in enumerate(materialized):
+        by_file_sha[fingerprint.file_sha256].append(index)
+        if fingerprint.pixel_sha256 is not None:
+            by_pixel_sha[fingerprint.pixel_sha256].append(index)
+        # Exclude low-entropy pHashes from the exact-pHash bucket too — not
+        # just the fuzzy pass. A solid-or-near-solid image hashes to all-
+        # zeros (DCT of a constant signal); any two such images, regardless
+        # of actual content, would otherwise be considered exact pHash
+        # matches and get unioned. With union-find across tiers, that's a
+        # real false-positive risk because the union propagates through
+        # whatever existing components those low-entropy files belong to.
+        if fingerprint.phash_hex is not None \
+                and not is_low_entropy_phash(fingerprint.phash_hex):
+            by_phash_exact[fingerprint.phash_hex].append(index)
+        if fingerprint.frame_phashes_hex is not None:
+            by_frame_phashes_exact[fingerprint.frame_phashes_hex].append(index)
+
+    def _union_bucket(bucket: list[int], tier: int) -> None:
+        # Star-pattern union: every other index joins bucket[0].
+        for other in bucket[1:]:
+            union_at_tier(bucket[0], other, tier)
 
     # Tier 1: byte-identical files (any media kind).
-    for members in by_file_sha.values():
-        _emit(1, members)
-    # Tier 2: identical decoded pixels (images) OR identical frame-pHash tuple
-    # (videos). Different signals, same "essentially the same content with
-    # different EXIF/metadata" semantic — kept in one tier so the report shows
-    # them with the same confidence badge.
-    for members in by_pixel_sha.values():
-        _emit(2, members)
-    for members in by_frame_phashes_exact.values():
-        _emit(2, members)
-
-    # Tier 3 (images): pHash match. Exact-equality buckets first (cheap);
-    # fuzzy union-find cluster only for fingerprints not already claimed.
-    for members in by_phash_exact.values():
-        _emit(3, members)
+    for bucket in by_file_sha.values():
+        _union_bucket(bucket, 1)
+    # Tier 2 (images): identical decoded pixels.
+    for bucket in by_pixel_sha.values():
+        _union_bucket(bucket, 2)
+    # Tier 2 (videos): identical 5-frame pHash tuple.
+    for bucket in by_frame_phashes_exact.values():
+        _union_bucket(bucket, 2)
+    # Tier 3 (images): exact pHash match.
+    for bucket in by_phash_exact.values():
+        _union_bucket(bucket, 3)
 
     if phash_hamming_threshold > 0:
-        # Fuzzy tier 3 (images): cluster the remaining pHash-bearing fingerprints
-        # by Hamming distance, excluding low-entropy hashes (solid colors).
-        image_remainders = [
-            fp for fp in materialized
+        # Fuzzy tier 3 (images). All phash-bearing, non-low-entropy
+        # fingerprints participate — including ones already unioned by a
+        # stronger tier — because a fuzzy edge can legitimately connect
+        # two components that strong signals didn't see across.
+        image_indices = [
+            i for i, fp in enumerate(materialized)
             if fp.phash_hex is not None
-            and fp.path not in used_paths
             and not is_low_entropy_phash(fp.phash_hex)
         ]
-        if image_remainders:
-            for cluster in _union_find_cluster(
-                image_remainders,
-                lambda a, b: hamming_distance_hex(a.phash_hex, b.phash_hex)
-                              <= phash_hamming_threshold,
-            ):
-                _emit(3, cluster)
+        for i_pos in range(len(image_indices)):
+            i = image_indices[i_pos]
+            phash_i = materialized[i].phash_hex
+            for j in image_indices[i_pos + 1:]:
+                if hamming_distance_hex(phash_i, materialized[j].phash_hex) \
+                        <= phash_hamming_threshold:
+                    union_at_tier(i, j, 3)
 
-        # Fuzzy tier 2 (videos): two videos match iff EVERY corresponding
-        # frame is within threshold. Stricter than image tier 3 because the
-        # signal is per-frame; one stray frame mismatch likely means different
-        # clips.
-        video_remainders = [
-            fp for fp in materialized
+        # Fuzzy tier 2 (videos): every corresponding frame must be within
+        # threshold. Stricter than image tier 3 because one stray frame
+        # mismatch likely means different clips.
+        video_indices = [
+            i for i, fp in enumerate(materialized)
             if fp.frame_phashes_hex is not None
-            and fp.path not in used_paths
         ]
-        if video_remainders:
-            def _videos_fuzzy_match(a: FileFingerprint, b: FileFingerprint) -> bool:
-                if len(a.frame_phashes_hex) != len(b.frame_phashes_hex):
-                    return False
-                return all(
-                    hamming_distance_hex(frame_a, frame_b) <= phash_hamming_threshold
-                    for frame_a, frame_b in zip(a.frame_phashes_hex, b.frame_phashes_hex)
-                )
-            for cluster in _union_find_cluster(video_remainders, _videos_fuzzy_match):
-                _emit(2, cluster)
+        for i_pos in range(len(video_indices)):
+            i = video_indices[i_pos]
+            frames_i = materialized[i].frame_phashes_hex
+            for j in video_indices[i_pos + 1:]:
+                frames_j = materialized[j].frame_phashes_hex
+                if len(frames_i) != len(frames_j):
+                    continue
+                if all(
+                    hamming_distance_hex(fa, fb) <= phash_hamming_threshold
+                    for fa, fb in zip(frames_i, frames_j)
+                ):
+                    union_at_tier(i, j, 2)
 
+    components: dict[int, list[int]] = defaultdict(list)
+    for index in range(n):
+        components[find(index)].append(index)
+
+    groups: list[DuplicateGroup] = []
+    for root, member_indices in components.items():
+        if len(member_indices) < 2:
+            continue
+        tier = tier_at_root.get(root, 3)
+        members = [materialized[i] for i in member_indices]
+        groups.append(DuplicateGroup(tier=tier, fingerprints=members))
+
+    # Sort groups by tier (strongest first) for deterministic output —
+    # this keeps the rest of the codebase (and any human eyeballing
+    # logs) reading top-down from highest confidence.
+    groups.sort(key=lambda g: g.tier)
     return groups
 
 
@@ -697,22 +754,36 @@ def plan_finalize(root: str) -> list[tuple[str, str]]:
     return plan
 
 
+_RENAME_PROGRESS_TICK = 2000
+
+
 def apply_simple_rename_plan(plan: list[tuple[str, str]]) -> int:
     """Two-phase staged rename (mirrors photo_lib.canonical_renumber).
 
     Tolerates cross-folder destinations: the target directory is created on
     demand before the staged file is rolled into its final name.
+
+    Logs progress every _RENAME_PROGRESS_TICK renames per phase. A
+    library-wide mark on an external drive can be 30k+ renames; without a
+    tick the caller goes silent for 10-20 minutes mid-apply and any hang
+    looks identical to "still running".
     """
     if not plan:
         return 0
+    total = len(plan)
+    logger.info("Applying rename plan: %d files, two-phase staged rename", total)
     staged: list[tuple[str, str]] = []
-    for old_path, new_path in plan:
+    for index, (old_path, new_path) in enumerate(plan, start=1):
         temp_path = old_path + ".__renaming__"
         os.rename(old_path, temp_path)
         staged.append((temp_path, new_path))
-    for temp_path, new_path in staged:
+        if index % _RENAME_PROGRESS_TICK == 0:
+            logger.info("  phase 1 (stage to temp): %d / %d", index, total)
+    for index, (temp_path, new_path) in enumerate(staged, start=1):
         target_dir = os.path.dirname(new_path)
         if target_dir and not os.path.isdir(target_dir):
             os.makedirs(target_dir, exist_ok=True)
         os.rename(temp_path, new_path)
+        if index % _RENAME_PROGRESS_TICK == 0:
+            logger.info("  phase 2 (temp to final): %d / %d", index, total)
     return len(staged)

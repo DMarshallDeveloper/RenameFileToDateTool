@@ -74,7 +74,10 @@ def flatten_takeout(root: Path) -> Path:
     for path in root.rglob("*"):
         if path.is_dir() or path.is_symlink():
             continue
-        if extracted_dir in path.parents:
+        # Skip files already flat at the top of extracted_dir, but DO walk
+        # nested children of extracted_dir — zip extraction lands files under
+        # extracted_dir/Takeout/... and those still need to be flattened up.
+        if path.parent == extracted_dir:
             continue
 
         destination = unique_path(extracted_dir / path.name, planned)

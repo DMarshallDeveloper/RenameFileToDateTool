@@ -89,9 +89,13 @@ class TestFlattenTakeout(unittest.TestCase):
         flatten.flatten_takeout(self.tmpdir)
 
         extracted = self.tmpdir / 'Extracted data'
-        landed_names = {p.name for p in extracted.rglob('*') if p.is_file()}
+        # Must land at the TOP LEVEL of Extracted data, not nested under
+        # Takeout/Google Photos/... — step 2 only scans the top level.
+        landed_names = {p.name for p in extracted.iterdir() if p.is_file()}
         self.assertIn('a.jpg', landed_names)
         self.assertIn('b.heic', landed_names)
+        # And the intermediate Takeout/ tree should be cleaned up.
+        self.assertFalse((extracted / 'Takeout').exists())
 
     @mock.patch.object(flatten, 'messagebox')
     def test_collision_between_nested_files_gets_suffix(self, _mock_messagebox):

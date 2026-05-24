@@ -472,3 +472,195 @@ The partial-state recovery: disk was fully normalized (`apply_rename_plan` compl
 ## Open follow-ups added 2026-05-21
 
 7. **`combine_libraries` resume / atomic copy** — write to `.partial` + atomic rename, and skip-if-source-mtime-matches on rerun. Closes the bytes-vs-metadata gap that `shutil.copy2` leaves open and removes the "restart-creates-duplicates" sharp edge.
+
+---
+
+## 2026-05-24 — PhotosCombined finalization, format cleanup, EXIF sweep
+
+User had completed the 30k-file manual dedup review on `F:\PhotosCombined`
+(workflow step 6) and copied the result to `D:\PhotosCombined`. Workflow step 7
+(`finalize`) had NOT yet run — 13,963 marker files were still on disk. This
+session ran finalize and all downstream cleanup. **From the finalize step
+onward, the total file count became a hard invariant** the user does not want
+to break (re-doing the 30k review is unacceptable). Captured this rule as
+`feedback_file_count_invariant.md` in auto-memory.
+
+Pre-session baseline media count: **14,132** (after user's manual cleanup of 12
+accidental Explorer `" - Copy"` files + 1 missing-from-2019 photo add, baseline
+adjusted to **14,121** before finalize). Final count after every step in this
+session: **14,121** — preserved exactly.
+
+### 27. Inbound: another Google Takeout zip; flatten bug found and fixed
+
+User downloaded `takeout-20260524T051011Z-3-001.zip` (a single 140 MB chunk).
+First `process_takeout.py --dry-run` returned 0 matched media files — the 14
+photos were extracted into `Extracted data/Takeout/Google Photos/export 24-5-26/`
+but the flattener never lifted them to the top level of `Extracted data/`.
+
+Root cause in `RenameFileToDateTool/extract_and_flatten_takeout.py:74-78`: the
+walk skipped anything with `extracted_dir` in its parents — but the zips were
+extracted INTO `extracted_dir`, so every just-unzipped file was excluded. The
+existing zip-extraction test used `rglob('*')` (recursive), which passed even
+when files stayed nested. Fixed:
+
+- `flatten_takeout`: skip files whose **immediate parent** is `extracted_dir`,
+  not any descendant. Nested files inside `extracted_dir/Takeout/...` now flatten
+  up; already-flat files stay put.
+- `tests/test_extract_and_bring.py`: tightened the zip test to use `iterdir()`
+  + `assertFalse((extracted / 'Takeout').exists())`.
+
+Re-run: 13 media (IMG_6658–6671, no _6659) all matched their `.json` sidecars
+via `exact_inferred`; live run staged to `D:\Files\Pictures and Videos\_Inbox\
+takeout-20260524\` with canonical names spanning 2026-05-19 → 2026-05-24.
+Commit `db15e7e`.
+
+### 28. Finalize on PhotosCombined (13,951 renames, 12 cross-folder)
+
+Pre-flight: 14,121. Dry-run showed 13,951 renames planned + 12 marker files the
+regex skipped — all 12 were Windows-Copy artifacts (`" - Copy"` infix between
+the marker and extension), all in `2000 - 2010\` at 2007-12-25/26. User
+manually deleted those 12 (6 .jpg + 6 .mp4 — counted from the filenames before
+deletion) and added one missing 2019 photo, taking the baseline from 14,132 to
+**14,121**. Re-run dry-run: 13,951 renames, 0 regex skips.
+
+Live finalize applied 13,951 renames via two-phase staged rename
+(`apply_simple_rename_plan`). Post-count: 14,121 ✓. Twelve cross-folder moves
+were cross-date dedup survivors returning to their origin year — including a
+notable 6-photo `2018-07-11 23.07–23.26` cluster that had been sitting in
+`2017\`.
+
+### 29. Stray non-media + extensionless MOV
+
+`2000 - 2010\Dad's Child Photos.pdf` — left in place per user (real document).
+`2026\2026-04-04 19.24.52_1` (no extension, `ftypqt  ` header) — the same
+extensionless-MOV case from §3 in the 2026-05-20 notes; the canonical `.mov`
+slot was free, restored via `os.rename`. Count: 14,121 unchanged.
+
+### 30. `.heif` → `.heic` rename + alias added to the codebase
+
+47 `.heif` files (1 in 2020, 1 in 2023, 1 in 2024, 44 in 2025); zero `.heic`
+collisions at the same `<base>_<idx>`. Bulk-renamed via `os.rename`. Then:
+
+- `RenameFileToDateTool/photo_lib/extensions.py:26-32`: added
+  `"heif": "heic"` to `CANONICAL_EXTENSION_ALIASES`. The 539-file rename on
+  PhotosCopy (2026-05-19) and these 47 had been manual sweeps; the alias makes
+  future takeout ingests and `normalize_canonical_names` runs auto-canonicalize
+  HEIF → HEIC the way they already did JPEG → JPG. Tests: 363 still passing.
+  Commit `a71f4ac`.
+
+### 31. AVI / MPG / 3GP → MP4 conversion (80 files, 1.3 GB → 1.0 GB)
+
+80 targets (75 .avi + 4 .mpg + 1 .3gp) — 79 in `2000 - 2010\`, 1 in `2022\`.
+Used `convert_unwanted_formats.py` with output staging at
+`D:\PhotosCombined_converted\` (separate from PhotosCombined so file count
+stayed clean during conversion). ffmpeg `libx264 preset=slow crf=18` with 4
+workers pegged the CPU; user opted to let it finish rather than throttle. All
+80 outputs valid h264/aac (ffprobe-verified samples). Total: 1297 MB → 1013 MB.
+
+Move + delete done as a single Python pass with phase-by-phase count checks:
+14,121 → 14,201 (after moving 80 .mp4s into year folders) → 14,121 (after
+deleting 80 originals). Staging folder now contains only `conversion.log`.
+
+### 32. Full library EXIF sweep (14,112 of 14,121 files written)
+
+User's question: "how do we know the OTHER files have correct EXIF after all
+this?" Dry-run answered it conclusively: **14,112 of 14,121 files** needed
+EXIF writes. NOT because primary timestamps were wrong (DateTimeOriginal /
+CreateDate / ModifyDate all matched filenames on every sampled file) but
+because:
+
+- `FileCreateDate` — set by `combine_libraries`' `shutil.copy2` to 2026-05-21
+  on every file (the combine run date), not the photo date.
+- `DateCreated` — present as date-only (`2014:01:01`) rather than full
+  datetime, which `is_metadata_in_sync` rejects.
+- `OffsetTime` / `OffsetTimeOriginal` — explicit TZ offsets never set.
+- The 80 new MP4s had no EXIF datetime at all (ffmpeg doesn't carry source
+  metadata for AVI sources, which have none anyway).
+- The ~1,700 USB-staged photos (per §13) never had a write_exif pass.
+
+Live run: 14,112 files updated in 119 batches of 100 via the chunked
+`write_exif_dates_batch`. 26 placeholder bumps (00.00.00 → 13.00.00) renamed
+files in 2011 + 2012. 8 placeholder-collision files skipped (target `13.00.00_N`
+slot was taken). Count preserved: 14,121.
+
+[minor] exiftool warnings on ~18 old camera JPEGs (Truncated MakerNotes, Bad
+format MakerNotes, Fixed MicrosoftPhoto URI) — pre-existing data quirks in
+source files; exiftool wrote our date tags successfully on all of them.
+
+### 33. Resolved the 8 placeholder-bump collisions
+
+The 8 skipped files were pixel-hashed (PIL RGB raw bytes, SHA-256) against
+their `13.00.00_N` blockers — **all 8 were pixel-distinct**, no duplicates.
+Renumbered to `max+1`-and-up free slots in their respective buckets:
+
+- `2000 - 2010\2000-01-01 01.01.00_1.jpg` → `_281.jpg`
+- `2000 - 2010\2000-01-01 01.01.00_165.jpg` → `_282.jpg`
+- `2011\2011-01-01 00.00.00_{8,9,10,13,14}.jpg` → `_{32,33,34,35,36}.jpg`
+- `2012\2012-01-01 00.00.00_1.jpg` → `_279.jpg`
+
+Then ran `write_exif_for_files` scoped to just those 8 — all 8 stamped with
+the correct 13:00 NZ time. The script recognises two placeholder time patterns
+(`00.00.00` and `01.01.00`); the `01.01.00` ones in 2000 were from photos
+imported via some path that bumped midnight by an hour before the more recent
+13:00 convention took over.
+
+### 34. `normalize_canonical_names` live sweep (2,777 renames)
+
+After the 8-collision fix, 2011's `13.00.00` bucket was contiguous 1–36 but
+other buckets still had pre-existing gaps from earlier finalize cross-folder
+moves and the 30k-file manual review. Dry-run: **2,777 renames** across 17
+folders, **all pure index gap-closing**, zero extension changes (the heif and
+heic + jpeg work having already canonicalized everything).
+
+Top reasons: `_3→_2` (657), `_2→_1` (374), `_5→_3` (178), `_7→_4` (63), etc.
+Live run applied all 2,777 cleanly; source manifest auto-updated for each
+rename (uses `SourceManifest.rename_many` from §26 to avoid the
+two-phase manifest UNIQUE-constraint issue). Count: 14,121 ✓.
+
+### 35. Audit findings — known false positive + one real cleanup item
+
+`audit_master.py --root D:\PhotosCombined` flagged ALL 17 folders as
+[NEEDS FIX] with the uniform symptom `FileCreateDate: expected '…', got ''`
+and `FileModifyDate: expected '…', got ''`. Spot-check on
+`D:\PhotosCombined\2014\2014-01-01 13.00.00_1.jpg` with the audit's own
+`exiftool -json -FileCreateDate -FileModifyDate …` invocation returned the
+correct values (`"2014:01:01 13:00:00+13:00"`). Bug is in `audit_master.py`'s
+post-read processing of those fields — needs investigation next session.
+
+Real structural finding from the audit:
+- **40 extension/content mismatches** — files named `.png` (and 1 `.webp`)
+  but containing JPG bytes. All in `2025\`, mostly autumn 2025 screenshots /
+  saved images. Examples: `2025/2025-09-15 16.32.12_1.png` actually a JPG.
+- **0 wrong-year-folder files**
+- **0 non-canonical filenames**
+
+### Where things stand at end-of-day 2026-05-24
+
+- **`D:\PhotosCombined`**: 14,121 media files, all canonical filenames, all
+  contiguous in their timestamp buckets, EXIF written from filename on every
+  file the writer could touch. Stray non-media: 1 PDF (intentional).
+- **`D:\Files\Pictures and Videos`**: untouched — still the legacy master.
+  Cutover not yet performed.
+- `MASTER_ROOT` in `RenameFileToDateTool/photo_lib/config.py:13` still points
+  at the legacy master.
+- Staging folder `D:\PhotosCombined_converted\` retains only `conversion.log`;
+  safe to delete whenever.
+- Dedup cache `.photo_hashes.db` at the root of `D:\PhotosCombined` is fully
+  stale (every file's mtime changed during write_exif + normalize); safe to
+  delete or leave for re-scan.
+
+### Open follow-ups added 2026-05-24
+
+8. **Cutover** — point `MASTER_ROOT` to `D:\PhotosCombined`, retire / archive
+   the legacy `D:\Files\Pictures and Videos`. Verify with `compare_libraries`
+   before deletion.
+9. **`audit_master.py` FileCreateDate/FileModifyDate false positive** — every
+   sampled image and video reports `got ''` for filesystem dates even when
+   exiftool's own JSON output returns the correct value. Trace the post-read
+   processing (likely in `strip_tz_suffix` or the metadata-by-path mapping
+   in audit_master.py:334). Once fixed, the audit should report all 17 folders
+   [OK] in steady state.
+10. **40 extension/content mismatches** — `.png`-named-but-JPG-content (and
+    1 `.webp` likewise) in `2025\`. Bulk-rename to `.jpg` would be the
+    obvious fix; first confirm they aren't actually transparent PNGs that
+    were re-saved through some pipeline that ate the alpha channel.

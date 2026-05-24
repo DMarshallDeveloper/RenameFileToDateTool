@@ -22,9 +22,11 @@ MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 # Spelling variants we canonicalize to a single extension so a folder doesn't
 # end up with both ``foo.jpeg`` and ``foo.jpg`` for what's really the same
 # content type. The takeout dump produces thousands of ``.jpeg`` files; master
-# library convention is ``.jpg``.
+# library convention is ``.jpg``. Likewise iOS exports occasionally use ``.heif``
+# but master uses ``.heic`` for all HEIF-family content.
 CANONICAL_EXTENSION_ALIASES = {
     "jpeg": "jpg",
+    "heif": "heic",
 }
 
 

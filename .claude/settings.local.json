@@ -18,7 +18,11 @@
       "Bash(.venv/Scripts/python.exe -m unittest discover -s tests -p \"test_*.py\" -v)",
       "Bash(.venv/Scripts/python.exe -m unittest tests.test_find_duplicate_photos -v)",
       "Bash(.venv/Scripts/python.exe -m unittest tests.test_find_duplicate_photos.TestEndToEnd.test_scan_warns_when_canonicalization_creates_orphans -v)",
-      "Bash(.venv/Scripts/python.exe -m unittest discover -s tests -p \"test_*.py\")"
+      "Bash(.venv/Scripts/python.exe -m unittest discover -s tests -p \"test_*.py\")",
+      "Bash(.venv/Scripts/python.exe -m unittest tests.test_photo_lib.test_duplicate_report tests.test_find_duplicate_photos)",
+      "Bash(python -m pytest tests/test_extract_and_bring.py -v)",
+      "Bash(python -m unittest tests.test_extract_and_bring -v)",
+      "Read(//d/Files/Pictures and Videos/_Inbox/takeout-20260524/**)"
     ]
   }
 }

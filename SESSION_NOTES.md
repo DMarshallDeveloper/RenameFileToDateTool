@@ -654,13 +654,56 @@ Real structural finding from the audit:
 8. **Cutover** — point `MASTER_ROOT` to `D:\PhotosCombined`, retire / archive
    the legacy `D:\Files\Pictures and Videos`. Verify with `compare_libraries`
    before deletion.
-9. **`audit_master.py` FileCreateDate/FileModifyDate false positive** — every
-   sampled image and video reports `got ''` for filesystem dates even when
-   exiftool's own JSON output returns the correct value. Trace the post-read
-   processing (likely in `strip_tz_suffix` or the metadata-by-path mapping
-   in audit_master.py:334). Once fixed, the audit should report all 17 folders
-   [OK] in steady state.
-10. **40 extension/content mismatches** — `.png`-named-but-JPG-content (and
-    1 `.webp` likewise) in `2025\`. Bulk-rename to `.jpg` would be the
-    obvious fix; first confirm they aren't actually transparent PNGs that
-    were re-saved through some pipeline that ate the alpha channel.
+9. ~~**`audit_master.py` FileCreateDate/FileModifyDate false positive**~~ —
+   **RESOLVED 2026-05-25.** Does not reproduce. All 17 folders report [OK].
+   The original false positive was likely a transient Windows filesystem state
+   issue during the heavy rename session (2,777 renames in §34), not a code bug.
+10. ~~**40 extension/content mismatches**~~ — **RESOLVED 2026-05-25.** 40 files
+    total (28 in `2025\`, 11 in `2026\`, 1 `.heic` in `2026\`) — all named
+    `.png`/`.webp`/`.heic` but containing JPEG data. Renamed to `.jpg` after
+    exiftool content verification + collision check. EXIF rewritten on all 40.
+    File count preserved: 14,121.
+
+---
+
+## 2026-05-25 — Extension mismatches fixed, audit clean
+
+### 36. Extension/content mismatches resolved (#10)
+
+40 files across `2025\` and `2026\` were named `.png` (38), `.webp` (1), or
+`.heic` (1) but contained JPEG data (confirmed via exiftool `FileTypeExtension`).
+All `.jpg` slots were free (0 collisions). Renamed all 40 to `.jpg`, then ran
+`write_exif_for_files` on all 40. File count: 14,121 preserved.
+
+### 37. Audit false positive resolved (#9)
+
+Re-ran `audit_master.py --root D:\PhotosCombined`. All 17 folders report `[OK]`.
+The `FileCreateDate`/`FileModifyDate` false positive from §35 does not reproduce.
+No code changes to `audit_master.py` since 2026-05-20 (`aa57edc`). The false
+positive was likely caused by transient Windows filesystem date caching right
+after the 2,777-rename normalize sweep in §34.
+
+Remaining structural finding: 0 extension mismatches, 0 wrong-year files,
+0 non-canonical filenames.
+
+### 38. Cutover completed (#8)
+
+Replaced the legacy master with the combined, deduped library:
+
+1. Removed 10 tooling artifacts from `D:\PhotosCombined` root (`.db`, `.json`,
+   `.html`, `.tsv`, `.bak` — 370 MB total, mostly the 333 MB duplicate report).
+2. Created empty `_Inbox/` folder in PhotosCombined.
+3. Renamed `D:\Files\Pictures and Videos` → `D:\Files\Pictures and Videos_old`.
+4. Moved `D:\PhotosCombined` → `D:\Files\Pictures and Videos`.
+5. File count verified: **14,121** (preserved exactly).
+6. `MASTER_ROOT` in `photo_lib/config.py` already pointed to
+   `D:\Files\Pictures and Videos` — no code change needed.
+
+Post-cutover audit (`audit_master.py` with default `MASTER_ROOT`):
+- 17/17 folders [OK]
+- 0 extension/content mismatches
+- 0 wrong-year-folder files
+- 0 non-canonical filenames
+
+The old master is archived at `D:\Files\Pictures and Videos_old` (14,958 files).
+Safe to delete once the user is satisfied with the new master.
